@@ -6,13 +6,6 @@ Optimized for Intel Core i3-1125G4 (Tiger Lake, 4 cores / 8 threads, 15 GiB RAM)
 from pathlib import Path
 import os
 import shutil
-import socket
-
-# Force IPv4 preference for network resilience on Linux systems with stalled IPv6 routes
-_orig_getaddrinfo = socket.getaddrinfo
-def _ipv4_preferring_getaddrinfo(host, port, family=0, *args, **kwargs):
-    return _orig_getaddrinfo(host, port, socket.AF_INET, *args, **kwargs)
-socket.getaddrinfo = _ipv4_preferring_getaddrinfo
 
 # Root directory of AI-Clipping workspace
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -57,9 +50,11 @@ HYPERFRAMES_BIN = str(BASE_DIR / "node_modules" / ".bin" / "hyperframes")
 # Hardware Optimization Settings (Intel Core i3-1125G4: 4 Cores / 8 Threads)
 PHYSICAL_CORES = 4
 TOTAL_THREADS = os.cpu_count() or 8
-# Configured for maximum throughput utilizing all 8 threads across all 4 cores
-CPU_THREADS = TOTAL_THREADS
-MAX_CONCURRENT_JOBS = 1
+# Limit per-process work and avoid oversubscribing render workers.
+CPU_THREADS = max(1, min(TOTAL_THREADS, int(os.environ.get("AI_CLIPPER_THREADS", TOTAL_THREADS))))
+MAX_CONCURRENT_JOBS = 1  # Prevent concurrent Whisper + scene analysis jobs on laptops.
+MAX_RENDER_WORKERS = max(1, min(2, CPU_THREADS // 2))
+RENDER_THREADS = max(1, CPU_THREADS // MAX_RENDER_WORKERS)
 
 # Faster-Whisper Settings
 WHISPER_MODEL_NAME = "base"
