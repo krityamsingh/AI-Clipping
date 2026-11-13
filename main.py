@@ -120,7 +120,7 @@ def run_cli_clipping(args):
     print(f"  Visual cuts detected: {len(scene_cuts)}")
 
     audio_signals = analyzer.analyze_audio_signals(wav_path) if wav_path else {}
-    print(f"  Audio RMS analysis complete: {len(audio_signals['peak_timestamps'])} volume peaks detected.")
+    print(f"  Audio RMS analysis complete: {len(audio_signals.get('peak_timestamps', []))} volume peaks detected.")
 
     print(f"\n[3/5] Transcribing speech with Faster-Whisper ({args.model} INT8, 4 threads)...")
     segments = analyzer.transcribe_audio(wav_path) if wav_path else []
