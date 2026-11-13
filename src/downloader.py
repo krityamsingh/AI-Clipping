@@ -60,7 +60,8 @@ class VideoDownloader:
         except ImportError:
             raise RuntimeError("yt-dlp is not installed in the environment.")
 
-        timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+        import uuid
+        timestamp_str = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         out_template = str(self.download_dir / f"download_{timestamp_str}_%(id)s.%(ext)s")
 
         ydl_opts = {
@@ -72,6 +73,8 @@ class VideoDownloader:
             "retries": 5,
             "fragment_retries": 5,
             "socket_timeout": 30,
+            "match_filter": yt_dlp.utils.match_filter_func("duration <= 14400"),
+            "max_filesize": 4 * 1024 * 1024 * 1024,
             "quiet": True,
             "no_warnings": True
         }
@@ -85,4 +88,6 @@ class VideoDownloader:
                 mp4_cand = path_obj.with_suffix(".mp4")
                 if mp4_cand.is_file():
                     return mp4_cand
+            if not path_obj.is_file():
+                raise DownloadError("Downloader returned no usable media file")
             return path_obj
