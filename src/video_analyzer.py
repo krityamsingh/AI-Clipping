@@ -143,45 +143,70 @@ class VideoAnalyzer:
 
     def detect_scenes(self, video_path: Path, threshold: float = SCENE_DETECTOR_THRESHOLD) -> List[float]:
         """
-        Detect visual shot changes using PySceneDetect.
+        Detect visual shot changes using PySceneDetect (with PyAV software backend) or FFmpeg fallback.
         Returns a sorted list of scene cut timestamps in seconds.
         """
         scene_cuts = []
+        video_path = Path(video_path)
+
+        # 1. Try PySceneDetect with PyAV backend first (avoids OpenCV hardware acceleration errors on AV1)
         try:
             from scenedetect import open_video, SceneManager, ContentDetector
-            video = open_video(str(video_path))
-            scene_manager = SceneManager()
-            scene_manager.add_detector(ContentDetector(threshold=threshold))
-            scene_manager.detect_scenes(video)
-            scene_list = scene_manager.get_scene_list()
+            video = None
+            try:
+                # Prefer PyAV backend for robust software decoding via libdav1d / ffmpeg
+                video = open_video(str(video_path), backend="pyav")
+            except Exception as be_err:
+                logger.debug(f"PyAV backend not available ({be_err}), trying opencv backend...")
+                try:
+                    video = open_video(str(video_path), backend="opencv")
+                except Exception:
+                    video = open_video(str(video_path))
 
-            for scene in scene_list:
-                start_sec = scene[0].get_seconds()
-                if start_sec > 0.05:
-                    scene_cuts.append(round(start_sec, 2))
+            if video is not None:
+                scene_manager = SceneManager()
+                scene_manager.add_detector(ContentDetector(threshold=threshold))
+                scene_manager.detect_scenes(video, frame_skip=1)
+                scene_list = scene_manager.get_scene_list()
+
+                for scene in scene_list:
+                    start_sec = scene[0].get_seconds()
+                    if start_sec > 0.05:
+                        scene_cuts.append(round(start_sec, 2))
         except Exception as e:
-            logger.warning(f"PySceneDetect scene detection failed or not available ({e}). Using fallback.")
-            # Fallback heuristic: sample visual cuts with ffmpeg select filter if needed
-            scene_cuts = self._detect_scenes_ffmpeg(video_path)
+            logger.warning(f"PySceneDetect encountered error: {e}")
+
+        # 2. If no cuts detected on videos longer than 5 seconds, invoke fast FFmpeg scene analysis fallback
+        if not scene_cuts:
+            try:
+                meta = self.probe_video(video_path)
+                if meta.get("duration", 0) > 5.0:
+                    logger.info("Visual cuts detected: 0 via PySceneDetect. Invoking high-speed FFmpeg scene fallback...")
+                    scene_cuts = self._detect_scenes_ffmpeg(video_path)
+            except Exception as e:
+                logger.warning(f"FFmpeg scene fallback failed: {e}")
 
         return sorted(list(set(scene_cuts)))
 
     def _detect_scenes_ffmpeg(self, video_path: Path) -> List[float]:
-        """Fallback scene cut detection using FFmpeg select filter."""
+        """High-speed fallback scene cut detection using FFmpeg select filter with 320p downscaling."""
         cuts = []
         try:
             cmd = [
                 FFMPEG_BIN,
+                "-threads", str(CPU_THREADS),
                 "-i", str(video_path),
-                "-filter_complex", "select='gt(scene,0.3)',metadata=print:file=-",
+                "-an",
+                "-vf", "scale=320:-1,select='gt(scene,0.3)',metadata=print:file=-",
                 "-f", "null", "-"
             ]
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=300)
             for line in res.stdout.splitlines():
                 if "pts_time:" in line:
                     try:
                         pts = float(line.split("pts_time:")[1].strip())
-                        cuts.append(round(pts, 2))
+                        if pts > 0.05:
+                            cuts.append(round(pts, 2))
                     except Exception:
                         pass
         except Exception as e:
@@ -264,21 +289,23 @@ class VideoAnalyzer:
         """
         Generate a concise, engaging title from the clip transcript.
         """
+        import re
         clean = transcript_slice.strip().replace("\n", " ")
+        clean = re.sub(r"\s+", " ", clean)
         if not clean:
             return "Engaging Highlight"
 
-        # Split into sentences
-        sentences = [s.strip() for s in clean.split(".") if len(s.strip()) > 8]
+        # Split into sentences or clauses
+        sentences = [s.strip(" ,;:-\"'") for s in re.split(r"[.!?]+", clean) if len(s.strip(" ,;:-\"'")) > 6]
         if sentences:
             candidate = sentences[0]
             words = candidate.split()
             if len(words) > 8:
-                return " ".join(words[:8]).capitalize() + "..."
+                return " ".join(words[:8]).strip(" ,;:-\"'").capitalize() + "..."
             return candidate.capitalize()
 
         words = clean.split()
-        return " ".join(words[:6]).capitalize()
+        return " ".join(words[:6]).strip(" ,;:-\"'").capitalize()
 
     def rank_candidate_highlights(
         self,
