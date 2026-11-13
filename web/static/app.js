@@ -1,5 +1,12 @@
 // AI Video Clipping & Editing Engine Frontend JavaScript
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[char]);
+}
+
+
 let pollInterval = null;
 
 // Switch Source Tabs
@@ -228,38 +235,40 @@ function renderClipsShowcase(clips) {
 
   container.innerHTML = '';
   clips.forEach((clip, idx) => {
+    const safeUrl = escapeHtml(clip.url);
+    const safeDownloadUrl = escapeHtml(clip.download_url);
     const card = document.createElement('div');
     card.className = 'clip-card';
     card.innerHTML = `
       <div class="clip-video-box">
-        <video class="clip-video-player" controls preload="metadata" src="${clip.url}">
+        <video class="clip-video-player" controls preload="metadata" src="${safeUrl}">
           Your browser does not support HTML5 video.
         </video>
       </div>
       <div class="clip-details">
-        <h3>#${idx + 1}: ${clip.title}</h3>
+        <h3>#${idx + 1}: ${escapeHtml(clip.title)}</h3>
         <div class="clip-meta-row">
-          <span class="clip-score-badge">Virality Score: ${clip.score || 95}/100</span>
-          <span>⏱️ ${clip.duration}s (${clip.start}s - ${clip.end}s)</span>
-          <span>📐 ${clip.aspect_ratio || '9:16'}</span>
-          <span>💾 ${clip.size_mb || '0'} MB</span>
+          <span class="clip-score-badge">Virality Score: ${escapeHtml(clip.score ?? 0)}/100</span>
+          <span>⏱️ ${escapeHtml(clip.duration)}s (${escapeHtml(clip.start)}s - ${escapeHtml(clip.end)}s)</span>
+          <span>📐 ${escapeHtml(clip.aspect_ratio || '9:16')}</span>
+          <span>💾 ${escapeHtml(clip.size_mb ?? 0)} MB</span>
         </div>
         <div class="clip-desc">
           <strong>Key Hook / Explanation:</strong>
-          <p>${clip.explanation || clip.text || 'High pacing viral segment with synchronized speech.'}</p>
+          <p>${escapeHtml(clip.explanation || clip.text || 'High pacing viral segment with synchronized speech.')}</p>
         </div>
         <div class="clip-actions">
-          <a href="${clip.download_url}" download class="btn btn-primary btn-sm">⬇️ Download MP4</a>
-          <button class="btn btn-secondary btn-sm" onclick="copyClipMetadata('${encodeURIComponent(JSON.stringify(clip))}')">📋 Copy Title & Description</button>
+          <a href="${safeDownloadUrl}" download class="btn btn-primary btn-sm">⬇️ Download MP4</a>
+          <button class="btn btn-secondary btn-sm" data-action="copy-metadata">📋 Copy Title & Description</button>
         </div>
       </div>
     `;
+    card.querySelector('[data-action="copy-metadata"]').addEventListener("click", () => copyClipMetadata(clip));
     container.appendChild(card);
   });
 }
 
-function copyClipMetadata(encodedClip) {
-  const clip = JSON.parse(decodeURIComponent(encodedClip));
+function copyClipMetadata(clip) {
   const text = `TITLE: ${clip.title}\n\nDESCRIPTION:\n${clip.explanation || clip.text}\n\n#shorts #reels #viral #ai`;
   navigator.clipboard.writeText(text).then(() => {
     alert('Title & description copied to clipboard!');
@@ -285,9 +294,9 @@ async function runStyleAnalysis() {
     const res = await fetch('/api/analyze-style', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Analysis failed');
-    view.innerHTML = `<pre style="white-space: pre-wrap; font-family: inherit;">${data.markdown}</pre>`;
+    view.innerHTML = `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(data.markdown)}</pre>`;
   } catch (err) {
-    view.innerHTML = `<p style="color: var(--danger)">Error: ${err.message}</p>`;
+    view.textContent = `Error: ${err.message}`;
   }
 }
 
