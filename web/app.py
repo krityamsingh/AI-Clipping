@@ -10,6 +10,8 @@ import os
 import shutil
 import time
 import uuid
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -17,7 +19,8 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTa
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from config.settings import (
     BASE_DIR,
@@ -26,7 +29,9 @@ from config.settings import (
     PREVIEWS_DIR,
     STYLE_DIR,
     WHISPER_MODEL_NAME,
-    CPU_THREADS
+    CPU_THREADS,
+    MAX_CONCURRENT_JOBS,
+    MAX_RENDER_WORKERS
 )
 from src.video_analyzer import VideoAnalyzer
 from src.video_editor import VideoEditor
@@ -50,16 +55,27 @@ templates = Jinja2Templates(directory=str(templates_dir))
 
 # In-memory jobs tracking
 jobs: Dict[str, Dict[str, Any]] = {}
+job_slots = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
+jobs_lock = threading.RLock()
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB
+
+def allowed_source(source: str) -> Path:
+    """Only process files already imported into the local raw/ workspace."""
+    path = Path(source).resolve()
+    if not path.is_file() or not path.is_relative_to(RAW_DIR.resolve()):
+        raise ValueError("Source must be a file inside raw/; upload or download it first")
+    return path
+
 
 
 class ProcessRequest(BaseModel):
     source: str
-    target_duration: float = 45.0
-    num_clips: int = 3
-    aspect_ratio: str = "9:16"
-    layout_style: str = "blur_fill"
-    export_quality: str = "final"
-    whisper_model: str = "base"
+    target_duration: float = Field(default=45.0, gt=0, le=600)
+    num_clips: int = Field(default=3, ge=1, le=30)
+    aspect_ratio: str = Field(default="9:16", pattern=r"^(9:16|16:9|1:1)$")
+    layout_style: str = Field(default="blur_fill", pattern=r"^(blur_fill|center_crop|fit_pad)$")
+    export_quality: str = Field(default="final", pattern=r"^(preview|final)$")
+    whisper_model: str = Field(default="base", pattern=r"^(tiny|base|small)$")
     burn_captions: bool = True
     word_highlight: bool = True
     normalize_audio: bool = True
@@ -108,16 +124,34 @@ async def list_raw_videos():
 
 @app.post("/api/upload")
 async def upload_video(file: UploadFile = File(...)):
-    """Upload video file directly to raw/."""
-    safe_filename = file.filename.replace(" ", "_")
+    """Stream uploads in chunks, enforce a size limit and never trust client paths."""
+    import re
+    original_name = Path((file.filename or "video.mp4").replace("\\", "/")).name
+    ext = Path(original_name).suffix.lower()
+    if ext not in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
+        raise HTTPException(status_code=415, detail="Unsupported video format")
+    basename = re.sub(r"[^A-Za-z0-9._-]", "_", Path(original_name).stem)[:64] or "video"
+    safe_filename = f"{basename}_{uuid.uuid4().hex[:12]}{ext}"
     target_path = RAW_DIR / safe_filename
-    with target_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    pending_path = RAW_DIR / f".{safe_filename}.uploading"
+    size = 0
+    try:
+        with pending_path.open("xb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="File exceeds 4 GiB limit")
+                await run_in_threadpool(buffer.write, chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Empty upload")
+        pending_path.replace(target_path)
+    finally:
+        pending_path.unlink(missing_ok=True)
+        await file.close()
     return {
-        "status": "success",
-        "filename": safe_filename,
+        "status": "success", "filename": safe_filename,
         "path": str(target_path.resolve()),
-        "size_mb": round(target_path.stat().st_size / (1024 * 1024), 2)
+        "size_mb": round(size / 1048576, 2)
     }
 
 
@@ -126,7 +160,7 @@ async def download_from_url(req: DownloadUrlRequest):
     """Download video from URL (YouTube, TikTok, Reels, etc.) via yt-dlp."""
     downloader = VideoDownloader(download_dir=RAW_DIR)
     try:
-        saved_path = downloader.download_url(req.url)
+        saved_path = await run_in_threadpool(downloader.download_url, req.url)
         return {
             "status": "success",
             "filename": saved_path.name,
@@ -141,14 +175,13 @@ async def download_from_url(req: DownloadUrlRequest):
 def run_pipeline_sync(job_id: str, req_data: Dict[str, Any]):
     """Synchronous background execution of the full clipping engine."""
     job = jobs[job_id]
+    job_slots.acquire()
     job["status"] = "processing"
     job["progress"] = 5
     job["current_step"] = "Resolving video source..."
 
     try:
-        source_path = Path(req_data["source"])
-        if not source_path.is_file():
-            raise FileNotFoundError(f"Source video not found: {source_path}")
+        source_path = allowed_source(req_data["source"])
 
         analyzer = VideoAnalyzer(whisper_model_name=req_data.get("whisper_model", "base"))
         editor = VideoEditor()
@@ -162,7 +195,10 @@ def run_pipeline_sync(job_id: str, req_data: Dict[str, Any]):
         # Step 2: Audio extraction
         job["progress"] = 25
         job["current_step"] = "Extracting high-fidelity 16kHz speech waveform..."
-        wav_path = analyzer.extract_audio(source_path)
+        if meta["has_audio"]:
+            wav_path = analyzer.extract_audio(source_path, output_wav=RAW_DIR / f".{job_id}_audio.wav")
+        else:
+            wav_path = None
 
         # Step 3: PySceneDetect Scene cuts
         job["progress"] = 38
@@ -173,12 +209,12 @@ def run_pipeline_sync(job_id: str, req_data: Dict[str, Any]):
         # Step 4: Audio signal analysis (peaks & silence)
         job["progress"] = 48
         job["current_step"] = "Computing RMS audio energy, peaks, and silence intervals..."
-        audio_signals = analyzer.analyze_audio_signals(wav_path)
+        audio_signals = analyzer.analyze_audio_signals(wav_path) if wav_path else {}
 
         # Step 5: Speech Recognition (Faster-Whisper INT8)
         job["progress"] = 62
         job["current_step"] = f"Transcribing speech with Faster-Whisper ({req_data.get('whisper_model', 'base')} INT8)..."
-        segments = analyzer.transcribe_audio(wav_path)
+        segments = analyzer.transcribe_audio(wav_path) if wav_path else []
         job["log"] = f"Transcribed {len(segments)} spoken segments."
 
         # Step 6: Highlight Ranking & Boundary Snapping
@@ -199,19 +235,16 @@ def run_pipeline_sync(job_id: str, req_data: Dict[str, Any]):
         out_dir = EXPORT_DIR if req_data["export_quality"] == "final" else PREVIEWS_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        for i, clip in enumerate(candidate_clips):
-            job["current_step"] = f"Rendering clip {i+1} of {len(candidate_clips)}: '{clip['title']}'..."
-            job["progress"] = 80 + int((i / len(candidate_clips)) * 18)
+        if not candidate_clips:
+            raise RuntimeError("No valid highlights were found; try a shorter duration")
 
-            timestamp_str = time.strftime("%Y%m%d_%H%M%S")
-            clip_filename = f"clip_{i+1}_{timestamp_str}_{req_data['export_quality']}.mp4"
+        def render_one(i, clip):
+            # Each render has its own file and subtitle path; FFmpeg threads are bounded.
+            clip_filename = f"clip_{job_id}_{i+1}_{req_data['export_quality']}.mp4"
             clip_out = out_dir / clip_filename
-
             editor.render_clip(
-                source_video=source_path,
-                start_time=clip["start"],
-                end_time=clip["end"],
-                output_path=clip_out,
+                source_video=source_path, start_time=clip["start"],
+                end_time=clip["end"], output_path=clip_out,
                 aspect_ratio=req_data["aspect_ratio"],
                 mode=req_data["export_quality"],
                 burn_captions=req_data["burn_captions"],
@@ -222,26 +255,30 @@ def run_pipeline_sync(job_id: str, req_data: Dict[str, Any]):
                 color_correction=req_data["color_correction"],
                 zoom_effect=req_data["zoom_effect"]
             )
-
-            # Metadata for frontend display
-            size_mb = round(clip_out.stat().st_size / (1024 * 1024), 2)
             url_path = f"/media/{'export' if req_data['export_quality'] == 'final' else 'previews'}/{clip_filename}"
-
-            rendered_clips.append({
-                "index": i + 1,
-                "title": clip["title"],
-                "score": clip.get("score", 90),
+            return {
+                "index": i + 1, "title": clip["title"],
+                "score": clip.get("score", 0),
                 "explanation": clip.get("explanation", ""),
-                "start": clip["start"],
-                "end": clip["end"],
+                "start": clip["start"], "end": clip["end"],
                 "duration": clip["duration"],
                 "aspect_ratio": req_data["aspect_ratio"],
                 "filename": clip_filename,
-                "size_mb": size_mb,
-                "url": url_path,
-                "download_url": url_path,
+                "size_mb": round(clip_out.stat().st_size / 1048576, 2),
+                "url": url_path, "download_url": url_path,
                 "text": clip.get("text", "")
-            })
+            }
+
+        worker_count = min(MAX_RENDER_WORKERS, len(candidate_clips))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = {pool.submit(render_one, i, clip): i
+                       for i, clip in enumerate(candidate_clips)}
+            for future in as_completed(futures):
+                rendered_clips.append(future.result())
+                finished = len(rendered_clips)
+                job["progress"] = 80 + int(finished / len(candidate_clips) * 18)
+                job["current_step"] = f"Rendered {finished} of {len(candidate_clips)} clips..."
+        rendered_clips.sort(key=lambda item: item["index"])
 
         # Finish Job
         job["progress"] = 100
@@ -255,12 +292,19 @@ def run_pipeline_sync(job_id: str, req_data: Dict[str, Any]):
         job["status"] = "failed"
         job["error"] = str(e)
         job["current_step"] = "Error encountered"
+    finally:
+        (RAW_DIR / f".{job_id}_audio.wav").unlink(missing_ok=True)
+        job_slots.release()
 
 
 @app.post("/api/process")
 async def start_process(req: ProcessRequest, background_tasks: BackgroundTasks):
     """Trigger background highlight clipping process."""
-    job_id = str(uuid.uuid4())[:8]
+    try:
+        allowed_source(req.source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_id = uuid.uuid4().hex
     jobs[job_id] = {
         "job_id": job_id,
         "status": "queued",
@@ -271,7 +315,7 @@ async def start_process(req: ProcessRequest, background_tasks: BackgroundTasks):
         "clips": [],
         "created_at": time.time()
     }
-    background_tasks.add_task(run_pipeline_sync, job_id, req.dict())
+    background_tasks.add_task(run_pipeline_sync, job_id, req.model_dump())
     return {"status": "queued", "job_id": job_id}
 
 

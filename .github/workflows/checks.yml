@@ -1,0 +1,37 @@
+name: AI Clipper checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Compile Python
+        run: python -m compileall -q main.py config src web tests
+      - name: Check dashboard JavaScript syntax
+        run: node --check web/static/app.js
+
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt httpx
+      - name: Offline regression tests
+        run: python -m unittest discover -s tests -p 'test_regressions.py' -v
+      - name: Web route tests
+        run: python tests/test_web.py

@@ -4,6 +4,7 @@ Combines speech transcription, audio peaks, and scene transitions to rank candid
 Optimized for CPU inference with Faster-Whisper INT8.
 """
 
+import bisect
 import json
 import logging
 import math
@@ -84,10 +85,15 @@ class VideoAnalyzer:
         data = json.loads(res.stdout)
         video_stream = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
         audio_stream = next((s for s in data.get("streams", []) if s.get("codec_type") == "audio"), None)
+        if video_stream is None:
+            raise ValueError(f"Input does not contain a video stream: {video_path}")
 
         duration = float(data.get("format", {}).get("duration", 0.0))
         if duration <= 0.0 and video_stream:
             duration = float(video_stream.get("duration", 0.0))
+
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError(f"Input video has invalid duration: {video_path}")
 
         fps = 30.0
         if video_stream and "r_frame_rate" in video_stream:
@@ -183,46 +189,41 @@ class VideoAnalyzer:
         return cuts
 
     def analyze_audio_signals(self, wav_path: Path) -> Dict[str, Any]:
-        """
-        Analyze audio waveform for RMS energy envelope, volume peaks, and silence intervals.
-        """
+        """Stream RMS in short windows instead of loading entire recordings into RAM."""
         import soundfile as sf
-        data, sample_rate = sf.read(str(wav_path))
-        if data.ndim > 1:
-            data = data.mean(axis=1)
 
-        # Compute RMS in 0.25-second windows
-        window_size = int(0.25 * sample_rate)
-        if window_size <= 0 or len(data) < window_size:
-            return {"rms_timeline": [], "peak_timestamps": [], "silence_intervals": []}
+        values = []
+        timestamps = []
+        with sf.SoundFile(str(wav_path)) as stream:
+            sample_rate = stream.samplerate
+            window_size = max(1, round(0.25 * sample_rate))
+            offset = 0
+            while True:
+                chunk = stream.read(frames=window_size, dtype="float32", always_2d=True)
+                if len(chunk) < window_size:
+                    break
+                mono = chunk.mean(axis=1)
+                rms = math.sqrt(float(np.mean(mono * mono, dtype=np.float64)) + 1e-12)
+                values.append(20.0 * math.log10(rms + 1e-9))
+                timestamps.append(round(offset / sample_rate, 2))
+                offset += window_size
+            duration = float(stream.frames / sample_rate) if sample_rate else 0.0
 
-        num_windows = len(data) // window_size
-        trimmed_len = num_windows * window_size
-        reshaped = data[:trimmed_len].reshape(num_windows, window_size)
-        rms = np.sqrt(np.mean(reshaped ** 2, axis=1) + 1e-12)
-        rms_db = 20 * np.log10(rms + 1e-9)
-
-        # Timestamps for each window
-        timestamps = np.arange(num_windows) * 0.25
-
-        # Detect peaks (e.g. > 90th percentile)
-        peak_threshold = np.percentile(rms_db, PEAK_PERCENTILE)
-        peak_indices = np.where(rms_db >= peak_threshold)[0]
-        peak_timestamps = [round(float(timestamps[i]), 2) for i in peak_indices]
-
-        # Detect silence intervals (< SILENCE_THRESHOLD_DB)
-        silence_indices = np.where(rms_db < SILENCE_THRESHOLD_DB)[0]
-        silence_timestamps = [round(float(timestamps[i]), 2) for i in silence_indices]
-
+        if not values:
+            return {"duration": duration, "rms_timeline": [], "timestamps": [],
+                    "peak_timestamps": [], "silence_timestamps": [],
+                    "mean_db": -100.0, "max_db": -100.0, "peak_threshold": -100.0}
+        rms_db = np.asarray(values, dtype=np.float32)
+        threshold = float(np.percentile(rms_db, PEAK_PERCENTILE))
         return {
-            "duration": float(len(data) / sample_rate),
-            "rms_timeline": [round(float(v), 2) for v in rms_db.tolist()],
-            "timestamps": [round(float(t), 2) for t in timestamps.tolist()],
-            "peak_timestamps": peak_timestamps,
-            "silence_timestamps": silence_timestamps,
+            "duration": duration,
+            "rms_timeline": [round(float(v), 2) for v in rms_db],
+            "timestamps": timestamps,
+            "peak_timestamps": [timestamps[i] for i in np.where(rms_db >= threshold)[0]],
+            "silence_timestamps": [timestamps[i] for i in np.where(rms_db < SILENCE_THRESHOLD_DB)[0]],
             "mean_db": float(np.mean(rms_db)),
             "max_db": float(np.max(rms_db)),
-            "peak_threshold": float(peak_threshold)
+            "peak_threshold": threshold
         }
 
     def transcribe_audio(self, wav_path: Path) -> List[Dict[str, Any]]:
@@ -295,6 +296,8 @@ class VideoAnalyzer:
         Guarantees non-overlapping highlights.
         """
         video_duration = video_metadata.get("duration", 0.0)
+        if target_duration <= 0 or num_clips < 1 or video_duration <= 0:
+            raise ValueError("Duration and clip count must be positive")
         if video_duration <= target_duration:
             title = self.generate_clip_title(" ".join(s["text"] for s in segments))
             return [{
@@ -311,7 +314,11 @@ class VideoAnalyzer:
         for s in segments:
             all_words.extend(s.get("words", []))
 
-        peak_times = set(audio_signals.get("peak_timestamps", []))
+        all_words.sort(key=lambda w: w["start"])
+        word_starts = [w["start"] for w in all_words]
+        word_ends = sorted(w["end"] for w in all_words)
+        peak_times = sorted(set(audio_signals.get("peak_timestamps", [])))
+        scene_cuts = sorted(scene_cuts)
         rms_times = audio_signals.get("timestamps", [])
         rms_values = audio_signals.get("rms_timeline", [])
         mean_db = audio_signals.get("mean_db", -30.0)
@@ -326,17 +333,21 @@ class VideoAnalyzer:
 
             # Snap start to nearest word start (within 1.5s tolerance)
             snapped_start = ideal_start
-            for w in all_words:
-                if abs(w["start"] - ideal_start) <= 1.5:
-                    snapped_start = w["start"]
-                    break
+            near = bisect.bisect_left(word_starts, ideal_start)
+            options = word_starts[max(0, near - 1):near + 1]
+            if options:
+                closest = min(options, key=lambda t: abs(t - ideal_start))
+                if abs(closest - ideal_start) <= 1.5:
+                    snapped_start = closest
 
             # Snap end to nearest sentence or word end (within 2.0s tolerance)
             snapped_end = ideal_end
-            for w in reversed(all_words):
-                if abs(w["end"] - ideal_end) <= 2.0:
-                    snapped_end = w["end"]
-                    break
+            near = bisect.bisect_left(word_ends, ideal_end)
+            options = word_ends[max(0, near - 1):near + 1]
+            if options:
+                closest = min(options, key=lambda t: abs(t - ideal_end))
+                if abs(closest - ideal_end) <= 2.0:
+                    snapped_end = closest
 
             clip_dur = snapped_end - snapped_start
             if clip_dur < target_duration * 0.70 or clip_dur > target_duration * 1.30:
@@ -344,17 +355,19 @@ class VideoAnalyzer:
                 continue
 
             # 1. Speech Density Score
-            words_in_window = [w for w in all_words if snapped_start <= w["start"] <= snapped_end]
+            left = bisect.bisect_left(word_starts, snapped_start)
+            right = bisect.bisect_right(word_starts, snapped_end)
+            words_in_window = all_words[left:right]
             wpm = (len(words_in_window) / (clip_dur / 60.0)) if clip_dur > 0 else 0
             # Target conversational pace ~ 120 - 180 wpm
             speech_density_score = min(100.0, (wpm / 140.0) * 100.0) if wpm > 0 else 10.0
 
             # 2. Audio Energy Score (peaks and relative RMS)
-            peaks_in_window = sum(1 for p in peak_times if snapped_start <= p <= snapped_end)
+            peaks_in_window = bisect.bisect_right(peak_times, snapped_end) - bisect.bisect_left(peak_times, snapped_start)
             peak_score = min(100.0, (peaks_in_window / max(1.0, clip_dur / 5.0)) * 50.0)
 
             # 3. Scene Changes (Visual Pacing)
-            cuts_in_window = sum(1 for c in scene_cuts if snapped_start <= c <= snapped_end)
+            cuts_in_window = bisect.bisect_right(scene_cuts, snapped_end) - bisect.bisect_left(scene_cuts, snapped_start)
             scene_score = min(100.0, (cuts_in_window / max(1.0, clip_dur / 6.0)) * 50.0)
 
             # Bonus for punctuation/questions/excitement in transcript
@@ -365,7 +378,7 @@ class VideoAnalyzer:
 
             # Penalty if window cuts in the middle of a word
             boundary_penalty = 0.0
-            for w in all_words:
+            for w in all_words[max(0, left-1):right+1]:
                 if w["start"] < snapped_start < w["end"] or w["start"] < snapped_end < w["end"]:
                     boundary_penalty += 20.0
 

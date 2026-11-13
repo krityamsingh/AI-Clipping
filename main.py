@@ -11,6 +11,8 @@ import logging
 import os
 import sys
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # Add project root to sys.path
@@ -26,7 +28,8 @@ from config.settings import (
     STYLE_DIR,
     MODELS_DIR,
     WHISPER_MODEL_NAME,
-    CPU_THREADS
+    CPU_THREADS,
+    MAX_RENDER_WORKERS
 )
 from src.video_analyzer import VideoAnalyzer
 from src.video_editor import VideoEditor
@@ -112,15 +115,15 @@ def run_cli_clipping(args):
     meta = analyzer.probe_video(source_path)
     print(f"  Container: {meta['width']}x{meta['height']} @ {meta['fps']}fps, duration: {meta['duration']:.1f}s")
 
-    wav_path = analyzer.extract_audio(source_path)
+    wav_path = analyzer.extract_audio(source_path) if meta["has_audio"] else None
     scene_cuts = analyzer.detect_scenes(source_path)
     print(f"  Visual cuts detected: {len(scene_cuts)}")
 
-    audio_signals = analyzer.analyze_audio_signals(wav_path)
+    audio_signals = analyzer.analyze_audio_signals(wav_path) if wav_path else {}
     print(f"  Audio RMS analysis complete: {len(audio_signals['peak_timestamps'])} volume peaks detected.")
 
     print(f"\n[3/5] Transcribing speech with Faster-Whisper ({args.model} INT8, 4 threads)...")
-    segments = analyzer.transcribe_audio(wav_path)
+    segments = analyzer.transcribe_audio(wav_path) if wav_path else []
     print(f"  Transcribed {len(segments)} spoken segments with word-level timestamps.")
 
     print(f"\n[4/5] Multi-signal highlight scoring & boundary snapping...")
@@ -140,11 +143,12 @@ def run_cli_clipping(args):
     out_dir = EXPORT_DIR if args.quality == "final" else PREVIEWS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    rendered_files = []
-    for h in highlights:
-        out_name = f"clip_{h['index']}_{time.strftime('%Y%m%d_%H%M%S')}_{args.quality}.mp4"
+    if not highlights:
+        raise RuntimeError("No highlights found; try a shorter target duration")
+
+    def render_one(h):
+        out_name = f"clip_{uuid.uuid4().hex[:12]}_{h['index']}_{args.quality}.mp4"
         out_path = out_dir / out_name
-        print(f"  Rendering Clip {h['index']}: '{h['title']}'...")
         editor.render_clip(
             source_video=source_path,
             start_time=h["start"],
@@ -160,8 +164,15 @@ def run_cli_clipping(args):
             color_correction=args.color,
             zoom_effect=args.zoom
         )
-        rendered_files.append(out_path)
-        print(f"   ✅ Saved: {out_path} ({round(out_path.stat().st_size / (1024*1024), 2)} MB)")
+        return out_path
+
+    rendered_files = []
+    with ThreadPoolExecutor(max_workers=min(MAX_RENDER_WORKERS, len(highlights))) as executor:
+        futures = [executor.submit(render_one, h) for h in highlights]
+        for future in as_completed(futures):
+            path = future.result()
+            rendered_files.append(path)
+            print(f"  Saved: {path} ({path.stat().st_size / 1048576:.2f} MB)")
 
     print("\n" + "=" * 65)
     print(" CLIPPING PIPELINE COMPLETED SUCCESSFULLY!")

@@ -24,6 +24,7 @@ from config.settings import (
     AUDIO_BITRATE,
     AUDIO_SAMPLE_RATE,
     CPU_THREADS,
+    RENDER_THREADS,
     PREVIEWS_DIR,
     EXPORT_DIR,
     CAPTIONS_DIR
@@ -114,7 +115,13 @@ class VideoEditor:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        duration = max(0.5, end_time - start_time)
+        if not source_video.is_file():
+            raise FileNotFoundError(source_video)
+        if start_time < 0 or end_time <= start_time:
+            raise ValueError("Clip bounds must satisfy 0 <= start_time < end_time")
+        if aspect_ratio not in ASPECT_RATIOS or mode not in ("final", "preview"):
+            raise ValueError("Unsupported aspect ratio or export mode")
+        duration = end_time - start_time
 
         # Target dimensions
         preset = ASPECT_RATIOS.get(aspect_ratio, ASPECT_RATIOS["9:16"])
@@ -127,13 +134,15 @@ class VideoEditor:
             "-show_streams", str(source_video)
         ]
         probe_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, text=True)
-        src_w, src_h = 1920, 1080
-        if probe_res.returncode == 0:
-            p_data = json.loads(probe_res.stdout)
-            v_s = next((s for s in p_data.get("streams", []) if s.get("codec_type") == "video"), None)
-            if v_s:
-                src_w = int(v_s.get("width", 1920))
-                src_h = int(v_s.get("height", 1080))
+        if probe_res.returncode != 0:
+            raise RuntimeError(f"Cannot probe input: {source_video}")
+        p_data = json.loads(probe_res.stdout)
+        v_s = next((s for s in p_data.get("streams", []) if s.get("codec_type") == "video"), None)
+        if v_s is None:
+            raise ValueError("Input is missing a video stream")
+        has_audio = any(st.get("codec_type") == "audio" for st in p_data.get("streams", []))
+        src_w = int(v_s.get("width", 1920))
+        src_h = int(v_s.get("height", 1080))
 
         # 1. Prepare Subtitle File if requested
         ass_path = None
@@ -194,8 +203,8 @@ class VideoEditor:
 
         cmd = [
             FFMPEG_BIN, "-y",
-            "-threads", str(CPU_THREADS),
-            "-filter_threads", str(CPU_THREADS),
+            "-threads", str(RENDER_THREADS),
+            "-filter_threads", str(RENDER_THREADS),
             "-ss", f"{start_time:.3f}",
             "-t", f"{duration:.3f}",
             "-i", str(source_video),
@@ -203,28 +212,42 @@ class VideoEditor:
             "-c:v", ENCODER_CODEC,
             "-preset", preset,
             "-crf", str(crf),
-            "-threads", str(CPU_THREADS),
+            "-threads", str(RENDER_THREADS),
             "-pix_fmt", "yuv420p"
         ]
 
-        if audio_filter_str:
-            cmd.extend(["-af", audio_filter_str])
+        if has_audio:
+            if audio_filter_str:
+                cmd.extend(["-af", audio_filter_str])
+            cmd.extend(["-c:a", AUDIO_CODEC, "-b:a", AUDIO_BITRATE,
+                        "-ar", str(AUDIO_SAMPLE_RATE)])
+        else:
+            cmd.append("-an")
+        # A unique temporary output prevents exposing broken/partial MP4 files.
+        import uuid
+        temp_path = output_path.with_name(f".{output_path.stem}.{uuid.uuid4().hex}.partial.mp4")
+        cmd.extend(["-movflags", "+faststart", str(temp_path)])
 
-        cmd.extend([
-            "-c:a", AUDIO_CODEC,
-            "-b:a", AUDIO_BITRATE,
-            "-ar", str(AUDIO_SAMPLE_RATE),
-            "-movflags", "+faststart",
-            str(output_path)
-        ])
+        logger.info("Rendering %s clip: %.2fs - %.2fs", mode, start_time, end_time)
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                 text=True, timeout=3600)
+            if res.returncode != 0:
+                raise RuntimeError(f"Video render failed: {res.stderr[-1200:]}")
+            if not temp_path.is_file() or temp_path.stat().st_size == 0:
+                raise RuntimeError("FFmpeg returned success without a playable output")
+            verify = subprocess.run(
+                [FFPROBE_BIN, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_name", "-of", "default=nw=1",
+                 str(temp_path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+            if verify.returncode or "codec_name=" not in verify.stdout:
+                raise RuntimeError(f"Export verification failed: {verify.stderr[-300:]}")
+            temp_path.replace(output_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
-        logger.info(f"Rendering {mode} clip ({aspect_ratio}): {start_time:.2f}s to {end_time:.2f}s -> {output_path.name}")
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            logger.error(f"FFmpeg render error: {res.stderr}")
-            raise RuntimeError(f"Video render failed: {res.stderr[-400:]}")
-
-        logger.info(f"Successfully rendered: {output_path} ({output_path.stat().st_size / (1024*1024):.2f} MB)")
+        logger.info("Rendered: %s (%.2f MB)", output_path, output_path.stat().st_size / 1048576)
         return output_path
 
     def generate_thumbnail(
