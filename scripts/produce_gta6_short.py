@@ -32,7 +32,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 from config.settings import (
     FFMPEG_BIN, FFPROBE_BIN,
-    RAW_DIR, EXPORT_DIR, PREVIEWS_DIR, AUDIO_DIR, CAPTIONS_DIR,
+    RAW_DIR, EXPORT_DIR, PREVIEWS_DIR, AUDIO_DIR, CAPTIONS_DIR, THUMBNAILS_DIR,
     WHISPER_MODEL_NAME, CPU_THREADS, RENDER_THREADS,
     ENCODER_CODEC, ENCODER_PRESET, ENCODER_CRF_FINAL,
     AUDIO_CODEC, AUDIO_BITRATE, AUDIO_SAMPLE_RATE
@@ -55,6 +55,8 @@ FINAL_OUTPUT = EXPORT_DIR / "GTA6_Final_Short.mp4"
 SRT_OUTPUT = EXPORT_DIR / "GTA6_Final_Short.srt"
 REPORT_OUTPUT = EXPORT_DIR / "GTA6_Clip_Report.json"
 PREVIEW_OUTPUT = PREVIEWS_DIR / "GTA6_Preview_720p.mp4"
+COVER_OUTPUT = EXPORT_DIR / "GTA6_Short_Cover.jpg"
+THUMBNAIL_OUTPUT = THUMBNAILS_DIR / "GTA6_Short_Cover.jpg"
 
 # GTA 6 content keywords for boosting relevance
 GTA6_KEYWORDS = [
@@ -335,14 +337,48 @@ def select_best_highlight(meta, segments, audio_signals, scene_cuts):
 
     candidates.sort(key=lambda x: x["score"], reverse=True)
 
-    # Show top 5
-    print(f"  Evaluated {len(candidates)} candidate windows")
-    print(f"  Top 5 highlights:")
-    for i, c in enumerate(candidates[:5]):
-        first_words = " ".join(c["text"].split()[:10])
-        print(f"    #{i+1} Score={c['score']:.1f} | {c['start']:.1f}s-{c['end']:.1f}s | "
-              f"Content={c['content_score']:.0f} Hook={c['hook_score']:.0f} | \"{first_words}...\"")
+    # Use EditingDirector for complete story boundaries if available
+    try:
+        from src.editing_director import EditingDirector
+        ed = EditingDirector()
+        directed = ed.rank(
+            target_duration=TARGET_DURATION,
+            num_clips=5,
+            video_metadata=meta,
+            segments=segments,
+            audio_signals=audio_signals,
+            scene_cuts=scene_cuts
+        )
+        if directed:
+            print(f"\n  EditingDirector evaluated {len(directed)} complete story candidates:")
+            for d in directed:
+                c_score = gta6_content_score(d["text"])
+                d["composite"] = round(d["score"] * 0.5 + c_score * 0.5, 2)
+                print(f"    • [{d['start']:.1f}s - {d['end']:.1f}s] Score={d['composite']} | {d['title']}")
+            directed.sort(key=lambda x: x["composite"], reverse=True)
+            best_dir = directed[0]
+            best = {
+                "start": best_dir["start"],
+                "end": best_dir["end"],
+                "duration": best_dir["duration"],
+                "score": best_dir["composite"],
+                "text": best_dir["text"],
+                "speech_wpm": best_dir["speech_wpm"],
+                "cuts": best_dir["cuts"],
+                "peaks": best_dir["peaks"],
+                "content_score": gta6_content_score(best_dir["text"]),
+                "hook_score": 100.0 if best_dir["evidence"]["opening_has_question_exclamation_or_number"] else 80.0,
+                "evidence": best_dir["evidence"]
+            }
+            print(f"\n  🏆 SELECTED STORY ARC: {best['start']:.1f}s - {best['end']:.1f}s (Score: {best['score']:.1f})")
+            print(f"     Title: {best_dir['title']}")
+            print(f"     Duration: {best['duration']:.1f}s | WPM: {best['speech_wpm']:.0f}")
+            print(f"     Ending punctuation: {best_dir['evidence']['ends_with_sentence_punctuation']}")
+            return best
+    except Exception as e:
+        logger.warning(f"EditingDirector fallback: {e}")
 
+    # Fallback to candidate windows
     best = candidates[0]
     print(f"\n  🏆 SELECTED: {best['start']:.1f}s - {best['end']:.1f}s (Score: {best['score']:.1f})")
     print(f"     Duration: {best['duration']:.1f}s | WPM: {best['speech_wpm']:.0f}")
@@ -487,10 +523,46 @@ def validate_output():
     return result
 
 
-def generate_report(best, meta, validation, render_time, total_time):
-    """Stage 12: Generate JSON report."""
+def generate_cover_thumbnail(best):
+    """Stage 12: Generate high-impact 9:16 vertical cover/thumbnail."""
     print("\n" + "=" * 70)
-    print(" STAGE 12: CLIP REPORT")
+    print(" STAGE 12: 9:16 VERTICAL COVER / THUMBNAIL GENERATION")
+    print("=" * 70)
+
+    thumb_time = best["start"] + 3.0
+
+    cmd = [
+        FFMPEG_BIN, "-y",
+        "-ss", f"{thumb_time:.3f}",
+        "-i", str(SOURCE_VIDEO),
+        "-vframes", "1",
+        "-filter_complex", (
+            "[0:v]split=2[bg_src][fg_src];"
+            "[bg_src]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,boxblur=luma_radius=min(h\\,w)/15:luma_power=3,"
+            "eq=brightness=-0.15:contrast=1.05[bg];"
+            "[fg_src]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2,"
+            "drawtext=text='100+ SECRET DETAILS':font='DejaVu Sans':fontsize=64:"
+            "fontcolor=white:bordercolor=black:borderw=6:x=(w-text_w)/2:y=240,"
+            "drawtext=text='GTA 6 REVEALED!':font='DejaVu Sans':fontsize=72:"
+            "fontcolor=yellow:bordercolor=black:borderw=7:x=(w-text_w)/2:y=330"
+        ),
+        "-q:v", "2",
+        str(COVER_OUTPUT)
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
+    import shutil
+    shutil.copy(COVER_OUTPUT, THUMBNAIL_OUTPUT)
+    print(f"  ✅ Cover generated: {COVER_OUTPUT.name} ({COVER_OUTPUT.stat().st_size / 1024:.1f} KB)")
+    print(f"  ✅ Copied to: {THUMBNAIL_OUTPUT.name}")
+    return COVER_OUTPUT
+
+
+def generate_report(best, meta, validation, render_time, total_time, cover_path=None):
+    """Stage 13: Generate JSON report."""
+    print("\n" + "=" * 70)
+    print(" STAGE 13: CLIP REPORT")
     print("=" * 70)
 
     report = {
@@ -524,6 +596,7 @@ def generate_report(best, meta, validation, render_time, total_time):
         },
         "output": {
             "file": str(FINAL_OUTPUT),
+            "cover_image": str(cover_path) if cover_path else str(COVER_OUTPUT),
             "srt_file": str(SRT_OUTPUT),
             "duration": validation["duration"],
             "resolution": f"{validation['width']}x{validation['height']}",
@@ -594,22 +667,26 @@ def main():
     # Stage 11
     validation = validate_output()
 
-    # Stage 12
+    # Stage 12: Cover / Thumbnail
+    cover_path = generate_cover_thumbnail(best)
+
+    # Stage 13: JSON Report
     total_time = time.time() - total_t0
-    report = generate_report(best, meta, validation, render_time, total_time)
+    report = generate_report(best, meta, validation, render_time, total_time, cover_path)
 
     # Final summary
     print("\n" + "█" * 70)
     print(" ✅ PRODUCTION COMPLETE")
     print("█" * 70)
-    print(f"  📹 Final Video:  {FINAL_OUTPUT}")
-    print(f"  📝 SRT Captions: {SRT_OUTPUT}")
-    print(f"  📊 Report:       {REPORT_OUTPUT}")
-    print(f"  📐 Resolution:   {validation['width']}x{validation['height']}")
-    print(f"  ⏱️  Duration:     {validation['duration']:.1f}s")
-    print(f"  📦 Size:         {validation['size_mb']:.1f} MB")
-    print(f"  🎬 Clip:         {best['start']:.1f}s - {best['end']:.1f}s")
-    print(f"  ⚡ Total Time:   {total_time:.0f}s ({total_time/60:.1f} min)")
+    print(f"  📹 Final Video:   {FINAL_OUTPUT}")
+    print(f"  🖼️ Cover Image:  {COVER_OUTPUT}")
+    print(f"  📝 SRT Captions:  {SRT_OUTPUT}")
+    print(f"  📊 Report:        {REPORT_OUTPUT}")
+    print(f"  📐 Resolution:    {validation['width']}x{validation['height']}")
+    print(f"  ⏱️  Duration:      {validation['duration']:.1f}s")
+    print(f"  📦 Size:          {validation['size_mb']:.1f} MB")
+    print(f"  🎬 Clip Range:    {best['start']:.1f}s - {best['end']:.1f}s")
+    print(f"  ⚡ Total Time:    {total_time:.0f}s ({total_time/60:.1f} min)")
     print("█" * 70)
 
 
