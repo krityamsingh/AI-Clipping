@@ -8,6 +8,7 @@ import soundfile as sf
 
 from src.video_analyzer import VideoAnalyzer
 from src.video_editor import VideoEditor
+from src.caption_generator import CaptionGenerator
 from web.app import allowed_source
 
 
@@ -49,6 +50,23 @@ class RegressionTests(unittest.TestCase):
             video.write_bytes(b"stub")
             with self.assertRaises(ValueError):
                 VideoEditor().render_clip(video, 12, 3, Path(root) / "out.mp4")
+
+    def test_font_fallback_for_indic_scripts(self):
+        cg = CaptionGenerator()
+        with tempfile.TemporaryDirectory() as root:
+            ass_path = Path(root) / "test.ass"
+            # Hindi text: 'नमस्ते दुनिया'
+            segments = [{"start": 0.0, "end": 2.0, "text": "नमस्ते दुनिया", "words": []}]
+            cg.generate_styled_ass(segments, ass_path)
+            content = ass_path.read_text(encoding="utf-8")
+            self.assertIn("Style: Default,FreeSans", content)
+
+    def test_clean_title_generation(self):
+        analyzer = VideoAnalyzer()
+        raw = "   -sixty under 100cb, zada, new features and more!   "
+        title = analyzer.generate_clip_title(raw)
+        self.assertFalse(title.startswith("-"))
+        self.assertFalse(title.endswith(","))
 
 
 if __name__ == "__main__":

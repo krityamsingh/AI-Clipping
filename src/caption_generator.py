@@ -170,6 +170,12 @@ class CaptionGenerator:
         scaled_margin_v = max(40, int(self.margin_v * scale))
         scaled_outline = max(1.5, self.outline_width * scale)
 
+        # Script-aware font selection: fallback to FreeSans for Indic / non-Latin Unicode scripts
+        full_text = " ".join(s.get("text", "") for s in segments)
+        font_to_use = self.font_name
+        if any(0x0900 <= ord(c) <= 0x0D7F for c in full_text):
+            font_to_use = "FreeSans"
+
         ass_header = f"""[Script Info]
 Title: AI Clipping Styled Captions
 ScriptType: v4.00+
@@ -181,7 +187,7 @@ PlayResY: {video_height}
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{self.font_name},{scaled_font_size},{self.primary_color},&H000000FF,{self.outline_color},&H80000000,-1,0,0,0,100,100,0,0,1,{scaled_outline:.1f},{self.shadow_width:.1f},{self.alignment},30,30,{scaled_margin_v},1
+Style: Default,{font_to_use},{scaled_font_size},{self.primary_color},&H000000FF,{self.outline_color},&H80000000,-1,0,0,0,100,100,0,0,1,{scaled_outline:.1f},{self.shadow_width:.1f},{self.alignment},30,30,{scaled_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
