@@ -9,6 +9,9 @@ echo "=========================================================="
 echo " Running AI Video Clipping Engine Verification Test Suite"
 echo "=========================================================="
 
+"$DIR/.venv/bin/python3" -m unittest discover -s tests -p "test_regressions.py" -v
+
+echo ""
 "$DIR/.venv/bin/python3" "$DIR/tests/test_environment.py"
 echo ""
 "$DIR/.venv/bin/python3" "$DIR/tests/test_tts.py"
