@@ -173,8 +173,8 @@ class VideoEditor:
             post_filters.append("eq=contrast=1.05:brightness=0.02:saturation=1.12")
 
         if zoom_effect:
-            # Gentle Ken Burns zoom-in
-            post_filters.append(f"zoompan=z='min(zoom+0.0006,1.08)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={target_w}x{target_h}:fps=30")
+            # Stable subtle crop instead of multiplying source frames with zoompan.
+            post_filters.append(f"crop=iw/1.04:ih/1.04:(iw-ow)/2:(ih-oh)/2,scale={target_w}:{target_h}")
 
         if ass_path and ass_path.is_file():
             # Escape path for FFmpeg filter syntax
@@ -182,13 +182,15 @@ class VideoEditor:
             post_filters.append(f"ass='{escaped_ass}'")
 
         # Combine filter graphs
-        if style == "blur_fill":
+        if style == "blur_fill" and abs(target_w / target_h - src_w / src_h) >= 0.02:
             filter_str = base_crop_filter
             if post_filters:
                 filter_str += f"," + ",".join(post_filters)
         else:
             all_v = [base_crop_filter] + post_filters
             filter_str = ",".join(all_v)
+
+        filter_str += "[vout]"
 
         # 3. Audio Filters (Loudnorm standard)
         a_filters = []
@@ -209,6 +211,7 @@ class VideoEditor:
             "-t", f"{duration:.3f}",
             "-i", str(source_video),
             "-filter_complex", filter_str,
+            "-map", "[vout]",
             "-c:v", ENCODER_CODEC,
             "-preset", preset,
             "-crf", str(crf),
@@ -217,6 +220,7 @@ class VideoEditor:
         ]
 
         if has_audio:
+            cmd.extend(["-map", "0:a:0"])
             if audio_filter_str:
                 cmd.extend(["-af", audio_filter_str])
             cmd.extend(["-c:a", AUDIO_CODEC, "-b:a", AUDIO_BITRATE,
