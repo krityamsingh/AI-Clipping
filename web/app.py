@@ -219,7 +219,7 @@ def run_pipeline_sync(job_id: str, req_data: Dict[str, Any]):
 
         # Step 6: Highlight Ranking & Boundary Snapping
         job["progress"] = 72
-        job["current_step"] = "Ranking highlights (speech density + audio peaks + scene cuts)..."
+        job["current_step"] = "Ranking transcript-grounded highlights with visual/audio evidence..."
         candidate_clips = analyzer.rank_candidate_highlights(
             target_duration=req_data["target_duration"],
             num_clips=req_data["num_clips"],
@@ -342,7 +342,7 @@ async def list_exports():
                 "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
                 "url": f"/media/{'export' if category == 'final' else 'previews'}/{f.name}",
                 "download_url": f"/media/{'export' if category == 'final' else 'previews'}/{f.name}",
-                "score": 92,
+                "score": None,
                 "aspect_ratio": "9:16",
                 "explanation": f"Saved export ({category})"
             })

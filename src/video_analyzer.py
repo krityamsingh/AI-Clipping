@@ -337,6 +337,16 @@ class VideoAnalyzer:
                 "explanation": "Full video fits target duration."
             }]
 
+        # Prefer transcript-grounded candidate stories when speech is available.
+        if segments:
+            from src.editing_director import EditingDirector
+            directed = EditingDirector().rank(
+                target_duration=target_duration, num_clips=num_clips,
+                video_metadata=video_metadata, segments=segments,
+                audio_signals=audio_signals, scene_cuts=scene_cuts)
+            if directed:
+                return directed
+
         all_words = []
         for s in segments:
             all_words.extend(s.get("words", []))
