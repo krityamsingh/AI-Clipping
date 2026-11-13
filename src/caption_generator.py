@@ -98,7 +98,7 @@ class CaptionGenerator:
                 end = min(end, clip_end - clip_start)
 
             text = seg.get("text", "").strip()
-            if not text:
+            if end <= start or not text:
                 continue
 
             lines.append(f"{index}")
@@ -234,6 +234,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         if not valid_words:
             output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(ass_header, encoding="utf-8")
             return output_path
 
