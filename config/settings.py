@@ -6,6 +6,13 @@ Optimized for Intel Core i3-1125G4 (Tiger Lake, 4 cores / 8 threads, 15 GiB RAM)
 from pathlib import Path
 import os
 import shutil
+import socket
+
+# Force IPv4 preference for network resilience on Linux systems with stalled IPv6 routes
+_orig_getaddrinfo = socket.getaddrinfo
+def _ipv4_preferring_getaddrinfo(host, port, family=0, *args, **kwargs):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, *args, **kwargs)
+socket.getaddrinfo = _ipv4_preferring_getaddrinfo
 
 # Root directory of AI-Clipping workspace
 BASE_DIR = Path(__file__).resolve().parent.parent
