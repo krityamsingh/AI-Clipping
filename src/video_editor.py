@@ -194,6 +194,8 @@ class VideoEditor:
 
         cmd = [
             FFMPEG_BIN, "-y",
+            "-threads", str(CPU_THREADS),
+            "-filter_threads", str(CPU_THREADS),
             "-ss", f"{start_time:.3f}",
             "-t", f"{duration:.3f}",
             "-i", str(source_video),

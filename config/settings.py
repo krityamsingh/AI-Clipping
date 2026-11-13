@@ -54,9 +54,11 @@ FFMPEG_BIN = get_binary_path("ffmpeg")
 FFPROBE_BIN = get_binary_path("ffprobe")
 HYPERFRAMES_BIN = str(BASE_DIR / "node_modules" / ".bin" / "hyperframes")
 
-# Hardware Optimization Settings (Intel Core i3-1125G4)
-SYSTEM_CORES = os.cpu_count() or 4
-CPU_THREADS = min(4, SYSTEM_CORES)
+# Hardware Optimization Settings (Intel Core i3-1125G4: 4 Cores / 8 Threads)
+PHYSICAL_CORES = 4
+TOTAL_THREADS = os.cpu_count() or 8
+# Configured for maximum throughput utilizing all 8 threads across all 4 cores
+CPU_THREADS = TOTAL_THREADS
 MAX_CONCURRENT_JOBS = 1
 
 # Faster-Whisper Settings

@@ -11,7 +11,7 @@
 
 | Metric / Subsystem | Detected Specification | Applied Engine Optimization |
 | :--- | :--- | :--- |
-| **CPU** | Intel Core i3-1125G4 (4C/8T) | Thread affinity capped to `4` threads to avoid thermal throttling; multi-job concurrency locked to `1`. |
+| **CPU** | Intel Core i3-1125G4 (4C/8T) | Configured to utilize all 8 threads across all 4 cores (`CPU_THREADS = 8`) with `-filter_threads 8` in FFmpeg for maximum multi-core rendering and Whisper throughput. |
 | **RAM** | 15 GiB Physical + 15 GiB Swap | Streaming processing via FFmpeg pipes; audio converted to 16kHz mono before Whisper processing. |
 | **GPU / VA-API** | Intel UHD Graphics G4 (`/dev/dri/renderD128`) | VA-API probed. Hardware encoding unavailable due to missing non-free iHD userspace drivers in environment. Automatically falls back to high-efficiency multithreaded `libx264` (`preset=veryfast`, `crf=22`). |
 | **Storage** | 709 GB Free on NVMe | Model cache isolated to `models/whisper/`; temp files purged after render verification. |

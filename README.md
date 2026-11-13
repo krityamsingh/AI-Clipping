@@ -10,7 +10,7 @@ Automatically transcribes long-form video, detects visual scene changes, analyze
 
 - **100% Free & Open-Source:** Runs locally with zero paid API requirements.
 - **Hardware-Tuned for Intel Core i3-1125G4:**
-  - 4 CPU threads allocated for multithreaded INT8 Whisper inference.
+  - 8 logical threads allocated for maximum multi-core INT8 Whisper inference and FFmpeg parallel encoding.
   - Video streaming pipeline preventing excessive RAM consumption.
   - Optimized FFmpeg `libx264` software encoding (`veryfast` preset).
 - **Multi-Signal Highlight Ranking:**
