@@ -235,19 +235,16 @@ def run_pipeline_sync(job_id: str, req_data: Dict[str, Any]):
         out_dir = EXPORT_DIR if req_data["export_quality"] == "final" else PREVIEWS_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        for i, clip in enumerate(candidate_clips):
-            job["current_step"] = f"Rendering clip {i+1} of {len(candidate_clips)}: '{clip['title']}'..."
-            job["progress"] = 80 + int((i / len(candidate_clips)) * 18)
+        if not candidate_clips:
+            raise RuntimeError("No valid highlights were found; try a shorter duration")
 
-            timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+        def render_one(i, clip):
+            # Each render has its own file and subtitle path; FFmpeg threads are bounded.
             clip_filename = f"clip_{job_id}_{i+1}_{req_data['export_quality']}.mp4"
             clip_out = out_dir / clip_filename
-
             editor.render_clip(
-                source_video=source_path,
-                start_time=clip["start"],
-                end_time=clip["end"],
-                output_path=clip_out,
+                source_video=source_path, start_time=clip["start"],
+                end_time=clip["end"], output_path=clip_out,
                 aspect_ratio=req_data["aspect_ratio"],
                 mode=req_data["export_quality"],
                 burn_captions=req_data["burn_captions"],
@@ -258,26 +255,30 @@ def run_pipeline_sync(job_id: str, req_data: Dict[str, Any]):
                 color_correction=req_data["color_correction"],
                 zoom_effect=req_data["zoom_effect"]
             )
-
-            # Metadata for frontend display
-            size_mb = round(clip_out.stat().st_size / (1024 * 1024), 2)
             url_path = f"/media/{'export' if req_data['export_quality'] == 'final' else 'previews'}/{clip_filename}"
-
-            rendered_clips.append({
-                "index": i + 1,
-                "title": clip["title"],
-                "score": clip.get("score", 90),
+            return {
+                "index": i + 1, "title": clip["title"],
+                "score": clip.get("score", 0),
                 "explanation": clip.get("explanation", ""),
-                "start": clip["start"],
-                "end": clip["end"],
+                "start": clip["start"], "end": clip["end"],
                 "duration": clip["duration"],
                 "aspect_ratio": req_data["aspect_ratio"],
                 "filename": clip_filename,
-                "size_mb": size_mb,
-                "url": url_path,
-                "download_url": url_path,
+                "size_mb": round(clip_out.stat().st_size / 1048576, 2),
+                "url": url_path, "download_url": url_path,
                 "text": clip.get("text", "")
-            })
+            }
+
+        worker_count = min(MAX_RENDER_WORKERS, len(candidate_clips))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = {pool.submit(render_one, i, clip): i
+                       for i, clip in enumerate(candidate_clips)}
+            for future in as_completed(futures):
+                rendered_clips.append(future.result())
+                finished = len(rendered_clips)
+                job["progress"] = 80 + int(finished / len(candidate_clips) * 18)
+                job["current_step"] = f"Rendered {finished} of {len(candidate_clips)} clips..."
+        rendered_clips.sort(key=lambda item: item["index"])
 
         # Finish Job
         job["progress"] = 100
