@@ -33,5 +33,7 @@ jobs:
         run: pip install -r requirements.txt httpx
       - name: Offline regression tests
         run: python -m unittest discover -s tests -p 'test_regressions.py' -v
+      - name: Content-aware director tests
+        run: python -m unittest discover -s tests -p 'test_editing_director.py' -v
       - name: Web route tests
         run: python tests/test_web.py
