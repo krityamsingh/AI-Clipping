@@ -1,0 +1,48 @@
+# Python & Environments
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Node.js
+node_modules/
+
+# Binaries & AI Models (Large Files)
+bin/*
+!bin/.gitkeep
+models/*
+!models/.gitkeep
+
+# Media Directories (Keep structure via .gitkeep)
+raw/*
+!raw/.gitkeep
+export/*
+!export/.gitkeep
+previews/*
+!previews/.gitkeep
+audio/*
+!audio/.gitkeep
+captions/*
+!captions/.gitkeep
+thumbnails/*
+!thumbnails/.gitkeep
+style/*
+!style/.gitkeep
+!style/STYLE.md
+
+# Test media artifacts
+tests/*.mp4
+tests/*.wav
+tests/*.ass
+
+# Logs & Cache
+logs/*.log
+*.log
+.cache/
+.DS_Store
+.idea/
+.vscode/

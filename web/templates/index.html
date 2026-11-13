@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Video Clipping & Highlight Engine</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">🎬</div>
+        <div>
+          <h1>AI Video Clipping Engine</h1>
+          <p class="subtitle">Autonomous Local-First Highlight Detection & Professional Reel Composer</p>
+        </div>
+      </div>
+      <div class="system-badges">
+        <span class="badge badge-cpu">⚡ Intel i3 Tiger Lake (4C/8T)</span>
+        <span class="badge badge-ai">🎙️ Whisper INT8</span>
+        <span class="badge badge-ffmpeg">🎞️ FFmpeg libx264</span>
+        <span class="badge badge-status" id="system-status">Ready</span>
+      </div>
+    </header>
+
+    <!-- Main Grid -->
+    <main class="main-grid">
+      <!-- Left Column: Settings & Configuration -->
+      <section class="card config-panel">
+        <h2>1. Video Source</h2>
+        
+        <!-- Tabs for Source Selection -->
+        <div class="tab-group">
+          <button class="tab-btn active" onclick="switchSourceTab('local')">Local Files</button>
+          <button class="tab-btn" onclick="switchSourceTab('upload')">Upload File</button>
+          <button class="tab-btn" onclick="switchSourceTab('url')">URL / YouTube</button>
+        </div>
+
+        <!-- Local files dropdown -->
+        <div id="tab-local" class="tab-content active">
+          <label for="local-video-select">Select video from <code>raw/</code>:</label>
+          <div class="row">
+            <select id="local-video-select" class="form-control">
+              <option value="">-- Scanning raw/ directory... --</option>
+            </select>
+            <button class="btn btn-secondary btn-icon" onclick="refreshRawVideos()" title="Refresh files">🔄</button>
+          </div>
+        </div>
+
+        <!-- File Upload -->
+        <div id="tab-upload" class="tab-content">
+          <label for="video-file-input">Upload MP4, MOV, or MKV:</label>
+          <input type="file" id="video-file-input" class="form-control" accept="video/mp4,video/quicktime,video/x-matroska,video/webm">
+          <button class="btn btn-secondary mt-2" onclick="uploadVideoFile()">Upload to raw/</button>
+          <div id="upload-progress" class="progress-bar-container hidden mt-2">
+            <div class="progress-bar-fill" id="upload-progress-fill" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <!-- URL / YouTube Download -->
+        <div id="tab-url" class="tab-content">
+          <label for="video-url-input">Paste Video Link (YouTube, Reels, TikTok, Web):</label>
+          <div class="row">
+            <input type="text" id="video-url-input" class="form-control" placeholder="https://www.youtube.com/watch?v=...">
+            <button class="btn btn-secondary" onclick="downloadVideoFromUrl()">Download</button>
+          </div>
+          <span class="hint">Downloaded directly to local <code>raw/</code> directory via yt-dlp.</span>
+        </div>
+
+        <hr class="divider">
+
+        <h2>2. Clipping & Layout Options</h2>
+        <div class="form-row">
+          <div class="form-group col-6">
+            <label for="clip-duration">Target Duration:</label>
+            <select id="clip-duration" class="form-control">
+              <option value="15">15 Seconds (Quick Bite)</option>
+              <option value="30">30 Seconds (Standard Hook)</option>
+              <option value="45" selected>45 Seconds (Engaging Story)</option>
+              <option value="60">60 Seconds (Full Short / Reel)</option>
+            </select>
+          </div>
+          <div class="form-group col-6">
+            <label for="num-clips">Number of Highlights:</label>
+            <select id="num-clips" class="form-control">
+              <option value="1">1 Top Highlight</option>
+              <option value="2">2 Clips</option>
+              <option value="3" selected>3 Clips</option>
+              <option value="4">4 Clips</option>
+              <option value="5">5 Clips</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group col-6">
+            <label for="aspect-ratio">Aspect Ratio:</label>
+            <select id="aspect-ratio" class="form-control">
+              <option value="9:16" selected>9:16 (Shorts / Reels / TikTok)</option>
+              <option value="16:9">16:9 (Landscape / Standard)</option>
+              <option value="1:1">1:1 (Square / Feed)</option>
+            </select>
+          </div>
+          <div class="form-group col-6">
+            <label for="layout-style">Layout Style:</label>
+            <select id="layout-style" class="form-control">
+              <option value="blur_fill" selected>Blurred Background Fill</option>
+              <option value="center_crop">Center Crop (Full Screen)</option>
+              <option value="fit_pad">Letterbox / Pillarbox</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group col-6">
+            <label for="export-quality">Export Quality:</label>
+            <select id="export-quality" class="form-control">
+              <option value="preview">720p Preview (Ultrafast)</option>
+              <option value="final" selected>1080p Final Master (High Quality)</option>
+            </select>
+          </div>
+          <div class="form-group col-6">
+            <label for="whisper-model">Speech Model:</label>
+            <select id="whisper-model" class="form-control">
+              <option value="base" selected>base (Fast INT8, ~140MB)</option>
+              <option value="tiny">tiny (Ultra-light, ~75MB)</option>
+              <option value="small">small (High accuracy)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="checkbox-group mt-2">
+          <label class="checkbox-label">
+            <input type="checkbox" id="opt-captions" checked>
+            <span>Burn-in Animated Captions (Yellow Karaoke Highlights)</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="opt-word-highlight" checked>
+            <span>Word-Level Active Highlighting</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="opt-loudnorm" checked>
+            <span>EBU R128 Audio Normalization (-16 LUFS)</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="opt-color" checked>
+            <span>Color & Contrast Boost (+12% Saturation)</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="opt-zoom">
+            <span>Subtle Dynamic Zoom Effect (Ken Burns)</span>
+          </label>
+        </div>
+
+        <!-- Action Button -->
+        <button id="btn-start" class="btn btn-primary btn-large mt-3" onclick="startClippingPipeline()">
+          🚀 Run Autonomous AI Clipper
+        </button>
+      </section>
+
+      <!-- Right Column: Progress & Generated Clips -->
+      <section class="card results-panel">
+        <div class="panel-header">
+          <h2>3. Generated Highlights & Exports</h2>
+          <button class="btn btn-secondary btn-sm" onclick="loadExistingExports()">Refresh Clips</button>
+        </div>
+
+        <!-- Progress Tracker -->
+        <div id="progress-container" class="progress-box hidden">
+          <div class="progress-header">
+            <span id="progress-step-text">Initializing pipeline...</span>
+            <span id="progress-percent-text">0%</span>
+          </div>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" id="pipeline-progress-fill" style="width: 0%"></div>
+          </div>
+          <p id="progress-details" class="progress-subtext">Optimizing for Intel Tiger Lake 4 Cores...</p>
+        </div>
+
+        <!-- Clips List / Showcase -->
+        <div id="clips-showcase" class="clips-container">
+          <div class="empty-state">
+            <div class="empty-icon">🎞️</div>
+            <p>No clips generated yet.</p>
+            <span class="hint">Select a video and click "Run Autonomous AI Clipper" to begin.</span>
+          </div>
+        </div>
+
+        <!-- Logs Accordion -->
+        <div class="logs-section mt-4">
+          <details>
+            <summary class="logs-toggle">View Processing Logs</summary>
+            <pre id="logs-output" class="logs-console">Engine ready.</pre>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <!-- Reference Style Analysis Drawer -->
+    <section class="card style-panel mt-4">
+      <div class="panel-header">
+        <div>
+          <h2>🎨 Reference-Style Profile (STYLE.md)</h2>
+          <p class="subtitle">Extracts shot pacing, audio dynamics, and typography from videos in <code>style/</code></p>
+        </div>
+        <button class="btn btn-secondary" onclick="runStyleAnalysis()">Analyze Reference Reels</button>
+      </div>
+      <div id="style-report-view" class="style-content">
+        <p class="hint">Click "Analyze Reference Reels" to scan the <code>style/</code> folder and update <code>STYLE.md</code>.</p>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
