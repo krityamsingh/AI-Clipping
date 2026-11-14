@@ -121,12 +121,27 @@ def _render_part(part, plan, source, out_dir, transcript, source_has_audio):
             cmd += ["-c:v", "libx264", "-preset", ENCODER_PRESET,
                     "-crf", str(ENCODER_CRF_FINAL if mode == "final" else ENCODER_CRF_PREVIEW),
                     "-pix_fmt", "yuv420p"]
-            cmd += ["-c:a", "copy"] if source_has_audio else ["-an"]
+            if source_has_audio:
+                if settings.get("normalize_audio", True):
+                    cmd += ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                            "-c:a", "aac", "-b:a", "192k"]
+                else:
+                    cmd += ["-c:a", "copy"]
+            else:
+                cmd += ["-an"]
             cmd += ["-movflags", "+faststart", str(partial)]
             _run(cmd)
         else:
-            _run([FFMPEG_BIN, "-y", "-v", "error", "-i", str(assembled),
-                  "-c", "copy", "-movflags", "+faststart", str(partial)])
+            cmd = [FFMPEG_BIN, "-y", "-v", "error", "-i", str(assembled), "-c:v", "copy"]
+            if source_has_audio and settings.get("normalize_audio", True):
+                cmd += ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                        "-c:a", "aac", "-b:a", "192k"]
+            elif source_has_audio:
+                cmd += ["-c:a", "copy"]
+            else:
+                cmd += ["-an"]
+            cmd += ["-movflags", "+faststart", str(partial)]
+            _run(cmd)
         # Only publish a validated playable export.
         probe = _probe(partial)
         decode = subprocess.run([FFMPEG_BIN, "-v", "error", "-i", str(partial),
@@ -147,6 +162,8 @@ def _render_part(part, plan, source, out_dir, transcript, source_has_audio):
         partial.replace(output)
 
     review = review_transcript(actual_segments)
+    from src.transcript_tools import review_cut_boundaries
+    review.extend(review_cut_boundaries(part["shots"], transcript))
     report = {
         "part": number, "title": part.get("title", ""),
         "output": str(output.resolve()),
