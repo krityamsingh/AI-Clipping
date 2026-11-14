@@ -10,6 +10,8 @@ Run from repository root on Kali Linux after installing FFmpeg/FFprobe and Pytho
 
 - Inspect and transcribe real source:
   python -m src.agent_cli analyze --source raw/my_video.mp4 --model small --duration 50 --vocabulary GTA Rockstar NPC
+- Extract actual scene frames for vision-capable agents:
+  python -m src.agent_cli frames --analysis analysis_report.json --output-dir previews/agent_frames --max-frames 24
 - Generate an editable plan:
   python -m src.agent_cli plan --analysis analysis_report.json --profile gaming --duration 50 --parts 2 --output edit_plan.json
 - Validate an agent-authored plan:
@@ -31,7 +33,8 @@ and GET /api/status/{job_id}. Server is local and unauthenticated; bind only to
 ## What the agent MUST do before editing
 
 1. Read the real analysis_report.json, metadata, transcript, word timings,
-   candidate_highlights and caption_review_flags. Watch original material when
+   candidate_highlights and caption_review_flags. Use the frames subcommand
+   to inspect actual timestamped JPEGs if the agent supports vision. Watch original material when
    visual understanding is required. Never claim to have seen a frame unless
    an actual image or decoder frame has been inspected.
 2. Identify what kind of video it is. Use general when uncertain.
