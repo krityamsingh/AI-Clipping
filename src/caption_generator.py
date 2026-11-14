@@ -11,34 +11,28 @@ import math
 
 def format_timestamp_srt(seconds: float) -> str:
     """Format seconds into SRT timestamp HH:MM:SS,mmm"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int(round((seconds - int(seconds)) * 1000))
-    if millis >= 1000:
-        millis = 999
+    total_ms = max(0, int(round(seconds * 1000)))
+    hours, rest = divmod(total_ms, 3600000)
+    minutes, rest = divmod(rest, 60000)
+    secs, millis = divmod(rest, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
 def format_timestamp_vtt(seconds: float) -> str:
     """Format seconds into VTT timestamp HH:MM:SS.mmm"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int(round((seconds - int(seconds)) * 1000))
-    if millis >= 1000:
-        millis = 999
+    total_ms = max(0, int(round(seconds * 1000)))
+    hours, rest = divmod(total_ms, 3600000)
+    minutes, rest = divmod(rest, 60000)
+    secs, millis = divmod(rest, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
 def format_timestamp_ass(seconds: float) -> str:
     """Format seconds into ASS timestamp H:MM:SS.cc (centiseconds)"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    centis = int(round((seconds - int(seconds)) * 100))
-    if centis >= 100:
-        centis = 99
+    total_cs = max(0, int(round(seconds * 100)))
+    hours, rest = divmod(total_cs, 360000)
+    minutes, rest = divmod(rest, 6000)
+    secs, centis = divmod(rest, 100)
     return f"{hours:01d}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
 
@@ -138,7 +132,7 @@ class CaptionGenerator:
                 end = min(end, clip_end - clip_start)
 
             text = seg.get("text", "").strip()
-            if not text:
+            if end <= start or not text:
                 continue
 
             lines.append(f"{index}")
@@ -242,6 +236,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         groups = []
         curr_group = []
         for w in valid_words:
+            if curr_group and w["start"] - curr_group[-1]["end"] > 0.48:
+                groups.append(curr_group)
+                curr_group = []
             curr_group.append(w)
             # Break group if max words reached or there is a natural pause (> 0.4s)
             if len(curr_group) >= self.max_words_per_group or w["word"].endswith((".", "!", "?", ",")):

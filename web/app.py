@@ -6,6 +6,7 @@ editing, style analysis, and export management.
 
 import asyncio
 import logging
+import re
 import os
 import shutil
 import time
@@ -373,3 +374,165 @@ async def serve_preview_file(filename: str):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(str(path), media_type="video/mp4")
+
+
+# ---------------------------------------------------------------------------
+# Model-neutral editing agent API. The web server is local-only by default.
+# ---------------------------------------------------------------------------
+from src.agent_workflow import analyze_source, build_auto_plan, validate_plan
+from src.render_plan import render_plan
+
+
+class AgentAnalyzeRequest(BaseModel):
+    source: str
+    model: str = Field(default="base", pattern=r"^(tiny|base|small|medium)$")
+    target_duration: float = Field(default=45.0, gt=5, le=600)
+    vocabulary: List[str] = Field(default_factory=list)
+
+
+class AgentPlanRequest(BaseModel):
+    analysis: Dict[str, Any]
+    profile: str = Field(default="general", pattern=r"^(general|podcast|gaming|talking_head|tutorial)$")
+    target_duration: float = Field(default=45, ge=5, le=600)
+    parts: Optional[int] = Field(default=None, ge=1, le=100)
+    aspect_ratio: str = Field(default="9:16", pattern=r"^(9:16|16:9|1:1)$")
+    quality: str = Field(default="final", pattern=r"^(final|preview)$")
+
+
+class AgentRenderRequest(BaseModel):
+    plan: Dict[str, Any]
+
+
+@app.get("/api/agent/spec")
+async def agent_spec():
+    """Discover tools and EDL semantics without model-specific SDKs."""
+    return {
+        "api_version": 1,
+        "documentation": "AGENTS.md",
+        "profiles": ["general", "podcast", "gaming", "talking_head", "tutorial"],
+        "operations": {
+            "analyze": "POST /api/agent/analyze, then GET /api/status/{job_id}",
+            "plan": "POST /api/agent/plan with analysis JSON",
+            "render": "POST /api/agent/render with edited plan JSON, then GET /api/status/{job_id}",
+            "download": "GET /api/agent/media/{job_id}/{filename}"
+        },
+        "edit_plan_fields": {
+            "version": 1, "source": "path in raw/",
+            "profile": "podcast", "settings": {"aspect_ratio": "9:16", "quality": "final",
+                                               "captions": True, "word_highlight": True},
+            "caption_corrections": {"observed incorrect phrase": "verified corrected phrase"},
+            "transcript": [{"start": 0, "end": 1, "text": "verified words", "words": []}],
+            "parts": [{"part": 1, "title": "observed title", "title_card": "PART 1",
+                       "shots": [{"shot_id": "first", "source_start": 0.5,
+                                  "source_end": 10.0, "layout": "blur_fill"}]}]
+        }
+    }
+
+
+def _agent_analyze_job(job_id, data):
+    job_slots.acquire()
+    job = jobs[job_id]
+    job["status"] = "processing"
+    job["progress"] = 10
+    job["current_step"] = "Analyzing source and checking captions..."
+    try:
+        report = analyze_source(
+            data["source"], model=data.get("model", "base"),
+            target_duration=data.get("target_duration", 45),
+            vocabulary=data.get("vocabulary") or [])
+        job["analysis_report"] = report
+        job.update(status="completed", progress=100,
+                   current_step="Analysis complete",
+                   details="Use analysis_report in POST /api/agent/plan")
+    except Exception as exc:
+        logger.exception("Agent analysis failed")
+        job.update(status="failed", current_step="Analysis failed", error=str(exc))
+    finally:
+        job_slots.release()
+
+
+@app.post("/api/agent/analyze")
+async def start_agent_analysis(req: AgentAnalyzeRequest, background_tasks: BackgroundTasks):
+    try:
+        source = allowed_source(req.source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_id = uuid.uuid4().hex
+    jobs[job_id] = {"job_id": job_id, "status": "queued", "progress": 0,
+                    "current_step": "Queued for analysis", "clips": [],
+                    "created_at": time.time()}
+    payload = req.model_dump()
+    payload["source"] = str(source)
+    background_tasks.add_task(_agent_analyze_job, job_id, payload)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/api/agent/plan")
+async def make_agent_plan(req: AgentPlanRequest):
+    try:
+        allowed_source(str(req.analysis.get("source") or ""))
+        plan = await run_in_threadpool(
+            build_auto_plan, req.analysis, profile=req.profile,
+            target_duration=req.target_duration, max_parts=req.parts,
+            aspect_ratio=req.aspect_ratio, quality=req.quality)
+        return {"status": "planned", "plan": plan}
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _agent_render_job(job_id, plan):
+    job_slots.acquire()
+    job = jobs[job_id]
+    job["status"] = "processing"
+    job["progress"] = 10
+    job["current_step"] = "Rendering agent-selected shots..."
+    try:
+        result = render_plan(plan, output_dir=EXPORT_DIR / job_id)
+        for part in result["parts"]:
+            number = part["part"]
+            part["url"] = "/api/agent/media/%s/Part_%02d.mp4" % (job_id, number)
+            part["srt_url"] = "/api/agent/media/%s/Part_%02d.srt" % (job_id, number)
+        job.update(status="completed", progress=100, current_step="Render validated",
+                   result=result, parts=result["parts"])
+    except Exception as exc:
+        logger.exception("Agent render failed")
+        job.update(status="failed", current_step="Render failed", error=str(exc))
+    finally:
+        job_slots.release()
+
+
+@app.post("/api/agent/render")
+async def start_agent_render(req: AgentRenderRequest, background_tasks: BackgroundTasks):
+    try:
+        allowed_source(str(req.plan.get("source") or ""))
+        validate_plan(req.plan)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_id = uuid.uuid4().hex
+    jobs[job_id] = {"job_id": job_id, "status": "queued", "progress": 0,
+                    "current_step": "Queued for agent edit render", "clips": [],
+                    "created_at": time.time()}
+    background_tasks.add_task(_agent_render_job, job_id, req.plan)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/agent/media/{job_id}/{filename}")
+async def agent_download(job_id: str, filename: str):
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", filename):
+        raise HTTPException(status_code=404, detail="Not found")
+    if filename.endswith(".mp4"):
+        media_type = "video/mp4"
+    elif filename.endswith(".srt"):
+        media_type = "text/plain"
+    elif filename.endswith((".ass", ".json")):
+        media_type = "text/plain"
+    else:
+        raise HTTPException(status_code=404, detail="Unsupported extension")
+    if job_id not in jobs or jobs[job_id].get("status") != "completed":
+        raise HTTPException(status_code=404, detail="Not found")
+    path = EXPORT_DIR / job_id / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path, media_type=media_type)
