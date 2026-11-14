@@ -224,7 +224,9 @@ def rank_stream_highlights(duration, motion, audio, chat=None, scene_cuts=None,
     unique = set()
     for strength, t, source in seed[:1200]:
         length = min(duration, target_duration)
-        start = max(0.0, min(t - context_before, duration - length))
+        # Keep the triggering event inside the window even for very short clips.
+        effective_padding = min(context_before, length * .45)
+        start = max(0.0, min(t - effective_padding, duration - length))
         end = start + length
         key = round(start, 1)
         if key in unique:
