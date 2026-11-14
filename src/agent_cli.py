@@ -77,6 +77,18 @@ def make_parser():
     live.add_argument("--chunk-seconds", type=float, default=180)
     live.add_argument("--chunks", type=int, default=2)
 
+    clip_live = cmds.add_parser("clip-live", help="Capture a bounded live session, then select and render highlights")
+    clip_live.add_argument("--url", required=True)
+    clip_live.add_argument("--chunk-seconds", type=float, default=180)
+    clip_live.add_argument("--chunks", type=int, default=2)
+    clip_live.add_argument("--capture-dir", default="raw/live_session")
+    clip_live.add_argument("--output-dir", default="export/live_session")
+    clip_live.add_argument("--profile", choices=PROFILES, default="livestream")
+    clip_live.add_argument("--style", choices=tuple(EDIT_STYLES), default="energetic")
+    clip_live.add_argument("--duration", type=float, default=45)
+    clip_live.add_argument("--clips-per-chunk", type=int, default=1)
+    clip_live.add_argument("--quality", default="preview", choices=["preview", "final"])
+
     verify = cmds.add_parser("validate", help="Validate an agent-created plan without rendering")
     verify.add_argument("--plan", required=True)
     return parser
@@ -122,6 +134,32 @@ def run(argv=None):
         from src.live_capture import capture_live
         result = capture_live(args.url, output_dir=args.output_dir,
                               chunk_seconds=args.chunk_seconds, chunks=args.chunks)
+    elif args.command == "clip-live":
+        from src.live_capture import capture_live
+        capture = capture_live(args.url, output_dir=args.capture_dir,
+                               chunk_seconds=args.chunk_seconds, chunks=args.chunks)
+        episodes = []
+        for index, item in enumerate(capture["segments"], 1):
+            report = analyze_source(
+                item["source"], target_duration=args.duration,
+                max_candidates=max(4, args.clips_per_chunk),
+                profile=args.profile, signals_only=True)
+            if not report["candidate_highlights"]:
+                episodes.append({"segment": index, "status": "no_highlight_evidence"})
+                continue
+            try:
+                plan = build_auto_plan(
+                    report, profile=args.profile, max_parts=args.clips_per_chunk,
+                    target_duration=args.duration, edit_style=args.style,
+                    quality=args.quality, captions=False)
+            except ValueError as error:
+                episodes.append({"segment": index, "status": "skipped", "reason": str(error)})
+                continue
+            folder = Path(args.output_dir) / ("segment_%03d" % index)
+            write_json(folder / "analysis_report.json", report)
+            episodes.append({"segment": index, "render": render_plan(plan, folder)})
+        result = {"capture": capture, "episodes": episodes,
+                  "notice": "Capture is finite and completed before analysis. Live ASR/captions are disabled."}
     elif args.command == "validate":
         plan = validate_plan(read_json(args.plan))
         result = {"status": "valid", "parts": len(plan["parts"])}
