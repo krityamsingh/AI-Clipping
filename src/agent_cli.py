@@ -57,6 +57,12 @@ def make_parser():
     auto.add_argument("--vocabulary", nargs="*", default=[])
     auto.add_argument("--corrections", help="Explicit phrase corrections JSON file")
 
+    frames = cmds.add_parser("frames", help="Extract real video frames for vision agents")
+    frames.add_argument("--analysis", required=True)
+    frames.add_argument("--output-dir", default="previews/agent_frames")
+    frames.add_argument("--max-frames", type=int, default=24)
+    frames.add_argument("--width", type=int, default=480)
+
     verify = cmds.add_parser("validate", help="Validate an agent-created plan without rendering")
     verify.add_argument("--plan", required=True)
     return parser
@@ -91,6 +97,10 @@ def run(argv=None):
         plan = read_json(args.plan)
         plan.setdefault("caption_corrections", {}).update(_corrections(args.corrections))
         result = render_plan(plan, args.output_dir)
+    elif args.command == "frames":
+        from src.visual_sampler import sample_frames
+        result = sample_frames(read_json(args.analysis), args.output_dir,
+                               max_frames=args.max_frames, width=args.width)
     elif args.command == "validate":
         plan = validate_plan(read_json(args.plan))
         result = {"status": "valid", "parts": len(plan["parts"])}
