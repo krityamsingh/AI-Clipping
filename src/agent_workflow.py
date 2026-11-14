@@ -112,9 +112,7 @@ def analyze_source(source, model="base", target_duration=45.0,
     candidates = (activity["candidate_highlights"] if activity else [])
     if not candidates:
         candidates = transcript_candidates
-    elif profile not in SIGNAL_WEIGHTS or profile == "general":
-        if transcript_candidates:
-            candidates = transcript_candidates
+    elif (profile not in SIGNAL_WEIGHTS or profile == "general") and transcript_candidates:
         candidates = transcript_candidates
     # For silent, visually static inputs there may genuinely be no highlights.
     if not candidates and not activity:
