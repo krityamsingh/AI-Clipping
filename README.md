@@ -115,3 +115,47 @@ cd ~/AI-Clipping
 - All video frames, audio tracks, and speech transcripts remain 100% on your local laptop.
 - No media is uploaded to external clouds or third-party servers.
 - The web interface binds strictly to localhost (`127.0.0.1`).
+
+
+## Autonomous editing agent interface (v2)
+
+AI-Clipping now provides a **model-neutral command line and REST interface**
+for agents (including IDE assistants and local LLMs). Agents can analyze real
+videos, select exact shots, modify a JSON edit decision list, split long
+podcasts into Part 1 / Part 2 episodes, correct verified caption errors and
+render the selected result. **Read [AGENTS.md](AGENTS.md) first.**
+
+### Quick start
+
+    python -m src.agent_cli analyze --source raw/my_video.mp4 --model small --vocabulary GTA Rockstar NPC --output analysis_report.json
+    python -m src.agent_cli plan --analysis analysis_report.json --profile gaming --parts 2 --output edit_plan.json
+    python -m src.agent_cli validate --plan edit_plan.json
+    python -m src.agent_cli render --plan edit_plan.json --output-dir export/agent_edit
+
+An external agent may edit edit_plan.json between plan and render: rearrange
+source_start/source_end clips, shot order, title cards, layouts, visual toggles
+and caption_corrections. No source-code changes are needed for a new edit.
+
+For a long podcast in one command:
+
+    python -m src.agent_cli auto --source raw/podcast.mp4 --profile podcast --parts 2 --duration 60 --model small --quality preview
+
+To correct names and phrases, create corrections.json, e.g.:
+
+    {"g t a": "GTA", "rock star": "Rockstar"}
+
+Then render with:
+
+    python -m src.agent_cli render --plan edit_plan.json --corrections corrections.json
+
+The web API supports GET /api/agent/spec and POST /api/agent/analyze,
+/api/agent/plan, and /api/agent/render; poll GET /api/status/{job_id}.
+
+The output includes Part_01.mp4, Part_01.srt, Part_01.ass,
+Part_01_quality_report.json, and additional parts as applicable.
+Each export is decoded fully and probed for dimensions, codec and duration.
+Transcript accuracy is not guaranteed: the engine flags uncertain words,
+accepts verified corrections and preserves corrected subtitles across edits.
+A local agent should listen to the source and verify final caption wording.
+The automatic candidate scoring is still a heuristic; advanced visual
+understanding and semantic self-review require a compatible external agent.
