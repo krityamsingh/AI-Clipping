@@ -74,6 +74,10 @@ def correct_transcript(segments, replacements=None):
 def review_transcript(segments, confidence_threshold=0.55):
     flags = []
     for idx, segment in enumerate(segments):
+        if segment.get("text") and not segment.get("words"):
+            flags.append({"segment": idx, "start": segment.get("start"),
+                          "end": segment.get("end"),
+                          "reason": "missing_word_alignment"})
         for word in segment.get("words") or []:
             probability = word.get("probability")
             if probability is not None and probability < confidence_threshold:
@@ -106,6 +110,9 @@ def retime_shots(shots, transcript, durations=None):
                 for word in words:
                     ws, we = float(word["start"]), float(word["end"])
                     if we <= start or ws >= end:
+                        continue
+                    # Omit partially clipped words: their full text is not audible.
+                    if ws < start - .06 or we > end + .06:
                         continue
                     new_start = max(0.0, ws - start)
                     new_end = min(actual_length, we - start)
@@ -173,3 +180,18 @@ def caption_cues(segments, max_words=5, max_chars=42, max_gap=0.48):
                 flush()
     flush()
     return cues
+
+
+def review_cut_boundaries(shots, transcript, tolerance=0.06):
+    """Flag edits that cut through a word, so the agent can choose better cuts."""
+    flags = []
+    for i, shot in enumerate(shots):
+        for label, boundary in (("start", float(shot["source_start"])),
+                                ("end", float(shot["source_end"]))):
+            for segment in transcript:
+                for word in segment.get("words") or []:
+                    if float(word["start"]) + tolerance < boundary < float(word["end"]) - tolerance:
+                        flags.append({"shot_index": i, "boundary": label,
+                                      "source_time": boundary, "word": word.get("word"),
+                                      "reason": "cut_inside_spoken_word"})
+    return flags
