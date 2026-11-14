@@ -160,3 +160,39 @@ accepts verified corrections and preserves corrected subtitles across edits.
 A local agent should listen to the source and verify final caption wording.
 The automatic candidate scoring is still a heuristic; advanced visual
 understanding and semantic self-review require a compatible external agent.
+
+
+## Long livestream, sports and action highlights
+
+The multi-signal clipper can examine large recorded streams without loading
+video frames into RAM. It computes frame motion spikes (2 fps), relative audio
+onsets and optional chat bursts; the agent chooses actual source timestamps
+from evidence, not invented "viral" events. For long VODs:
+
+    python -m src.agent_cli analyze --source raw/long_stream.mp4 \
+      --profile livestream --signals-only --duration 45 \
+      --candidates 20 --output analysis_report.json
+    python -m src.agent_cli plan --analysis analysis_report.json \
+      --profile livestream --style energetic --parts 5 --output edit_plan.json
+    python -m src.agent_cli render --plan edit_plan.json
+
+For direct playable HLS/RTMP streams, finite capture plus clip export:
+
+    python -m src.agent_cli clip-live --url "https://example.com/live.m3u8" \
+      --chunks 4 --chunk-seconds 180 --clips-per-chunk 1 \
+      --capture-dir raw/live_001 --output-dir export/live_001
+
+Video category profiles now include livestream, gaming, esports, sports,
+podcast, interview, talking_head, reaction, comedy, vlog, travel, tutorial,
+education, technology, product_demo, review, documentary, news, music,
+dance, cooking, trailer, general. Implemented edit styles: clean, energetic,
+gaming, podcast, tutorial, cinematic, documentary and minimal.
+These change actual caption typography and default framing, not arbitrary
+random effects. See AGENTS.md for category-specific decisions and limitations.
+
+Use --chat-log with relative timestamped messages in JSON, JSONL, or
+[HH:MM:SS] TXT format. With --signals-only Whisper is intentionally skipped
+and speech captions are disabled; speech accuracy requires real ASR and
+verification. The capture operation records for a finite duration and **then**
+analyzes chunks; it is not continuous live classification. Agent models can
+inspect sampled original frames via the frames command.

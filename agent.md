@@ -29,3 +29,43 @@ decisions only from actual source evidence.
 
 **For full schema, tool endpoints, quality requirements, constraints and
 content-specific editing decisions, use AGENTS.md.**
+
+
+## New activity-driven clipping workflow
+
+For a multi-hour game stream, esports match, sports stream or reaction video:
+
+    python -m src.agent_cli analyze --source raw/stream.mp4 \
+      --profile livestream --signals-only --candidates 25 \
+      --duration 45 --output analysis_report.json
+    python -m src.agent_cli frames --analysis analysis_report.json --max-frames 48
+    python -m src.agent_cli plan --analysis analysis_report.json \
+      --profile livestream --style energetic --parts 5
+    python -m src.agent_cli render --plan edit_plan.json
+
+Supported content profiles: general, livestream, gaming, esports, sports,
+podcast, interview, talking_head, reaction, comedy, vlog, travel, tutorial,
+education, technology, product_demo, review, documentary, news, music,
+dance, cooking and trailer.
+
+Choose one implemented edit style: clean, energetic, gaming, podcast,
+tutorial, cinematic, documentary or minimal. Style changes actual captions,
+framing and modest grading. Do not confuse profile with style.
+
+For optional chat spikes supply --chat-log raw/chat.json with timestamps
+measured relative to recording start. For directly playable HLS/RTMP:
+
+    python -m src.agent_cli clip-live --url "https://example.com/live.m3u8" \
+      --chunks 4 --chunk-seconds 180 --duration 45 \
+      --capture-dir raw/live_001 --output-dir export/live_001
+
+This capture is finite; the actual clipping happens after recording completes.
+Use fresh folders per capture. A page URL from Twitch/YouTube is not necessarily
+a playable FFmpeg URL. Captions are unavailable in --signals-only unless an
+actual timed transcript is supplied later.
+
+**Crucial**: measured audio, motion and chat peaks indicate possible action,
+not semantic certainty (goals, kills, record-breaking moments, comedy).
+Inspect video frames and listen to source audio before generating factual
+titles or declaring the clip accurate. Continue using the full AGENTS.md
+quality, caption and unsupported-feature requirements.

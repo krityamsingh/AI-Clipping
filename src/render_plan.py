@@ -20,6 +20,7 @@ from src.transcript_tools import (correct_transcript, retime_shots,
                                   caption_cues, review_transcript)
 from src.video_editor import VideoEditor
 from src.video_analyzer import VideoAnalyzer
+from src.clip_profiles import get_style
 
 logger = logging.getLogger("AI-Clipping.AgentRender")
 
@@ -61,8 +62,10 @@ def _render_part(part, plan, source, out_dir, transcript, source_has_audio):
     output = out_dir / ("Part_%02d.mp4" % number)
     srt_output = out_dir / ("Part_%02d.srt" % number)
     ass_output = out_dir / ("Part_%02d.ass" % number)
+    style_name, style_def = get_style(part.get("edit_style", settings.get("edit_style")), plan.get("profile", "general"))
     editor = VideoEditor()
-    generator = CaptionGenerator()
+    generator = CaptionGenerator(**{key: style_def[key] for key in (
+        "font_size", "highlight_color", "outline_width", "margin_v", "max_words_per_group")})
 
     with tempfile.TemporaryDirectory(prefix="agent_edit_") as temp_name:
         temp = Path(temp_name)
@@ -75,9 +78,9 @@ def _render_part(part, plan, source, out_dir, transcript, source_has_audio):
                 end_time=float(shot["source_end"]), output_path=shot_path,
                 aspect_ratio=aspect, mode=mode, burn_captions=False,
                 word_highlight=False, transcript_segments=[],
-                style=shot.get("layout", settings.get("layout", "blur_fill")),
+                style=shot.get("layout", settings.get("layout", style_def["layout"])),
                 normalize_audio=False,
-                color_correction=bool(shot.get("color_correction", False)),
+                color_correction=bool(shot.get("color_correction", style_def["color_correction"])),
                 zoom_effect=bool(shot.get("zoom_effect", False)))
             measured = _probe(shot_path)
             if bool(measured["audio_codec"]) != bool(source_has_audio):
@@ -111,7 +114,7 @@ def _render_part(part, plan, source, out_dir, transcript, source_has_audio):
                         "{\\an8\\fs72\\bord5\\shad2}%s\n"
                         % (format_timestamp_ass(end), safe_title))
         partial = temp / "final.mp4"
-        if settings.get("captions", True):
+        if settings.get("captions", True) or bool(title):
             cmd = [FFMPEG_BIN, "-y", "-v", "error",
                    "-threads", str(RENDER_THREADS),
                    "-i", str(assembled), "-vf", _ass_filter(ass_output),
@@ -166,6 +169,7 @@ def _render_part(part, plan, source, out_dir, transcript, source_has_audio):
     review.extend(review_cut_boundaries(part["shots"], transcript))
     report = {
         "part": number, "title": part.get("title", ""),
+        "edit_style": style_name, "profile": plan.get("profile", "general"),
         "output": str(output.resolve()),
         "srt": str(srt_output.resolve()),
         "ass": str(ass_output.resolve()),
