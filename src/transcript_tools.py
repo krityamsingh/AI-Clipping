@@ -47,7 +47,10 @@ def correct_transcript(segments, replacements=None):
                     fixed_words.extend(dict(w) for w in words[i:i + len(old)])
                     i += len(old)
                     continue
+                trailing = re.search(r"[.,!?;:।]+$", str(words[i + len(old) - 1].get("word") or "").strip())
                 for n, token in enumerate(new):
+                    if n == len(new) - 1 and trailing:
+                        token += trailing.group()
                     fixed_words.append({
                         "word": token,
                         "start": round(start + (end - start) * n / len(new), 3),
