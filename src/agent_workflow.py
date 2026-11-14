@@ -178,6 +178,8 @@ def build_auto_plan(report, *, profile="general", target_duration=45.0,
         if len(best) >= count:
             break
     candidates = sorted(best, key=lambda item: (item["start"], item["end"]))
+    if max_parts is not None and len(candidates) < count:
+        raise ValueError("Not enough distinct source highlights for requested parts; select shots manually or reduce --parts")
     parts = []
     for index, candidate in enumerate(candidates[:count], 1):
         parts.append({
