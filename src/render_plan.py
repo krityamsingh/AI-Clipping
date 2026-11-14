@@ -114,7 +114,7 @@ def _render_part(part, plan, source, out_dir, transcript, source_has_audio):
                         "{\\an8\\fs72\\bord5\\shad2}%s\n"
                         % (format_timestamp_ass(end), safe_title))
         partial = temp / "final.mp4"
-        if settings.get("captions", True):
+        if settings.get("captions", True) or bool(title):
             cmd = [FFMPEG_BIN, "-y", "-v", "error",
                    "-threads", str(RENDER_THREADS),
                    "-i", str(assembled), "-vf", _ass_filter(ass_output),
