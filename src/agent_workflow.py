@@ -60,6 +60,8 @@ def analyze_source(source, model="base", target_duration=45.0,
     cache = BASE_DIR / "analysis" / (hashlib.sha256(key.encode()).hexdigest()[:20] + ".json")
     if cache.is_file() and not force:
         return read_json(cache)
+    if not 1 <= max_candidates <= 100:
+        raise ValueError("Candidate count must be 1..100")
     analyzer = VideoAnalyzer(whisper_model_name=model)
     meta = analyzer.probe_video(path)
     audio = analyzer.extract_audio(path) if meta["has_audio"] else None
@@ -168,7 +170,14 @@ def build_auto_plan(report, *, profile="general", target_duration=45.0,
             target_duration=target_duration, num_clips=count,
             video_metadata=report["metadata"], segments=report.get("transcript") or [],
             audio_signals={}, scene_cuts=report.get("scene_cuts") or [])
-    candidates = sorted(candidates, key=lambda item: (item["start"], item["end"]))
+    candidates = sorted(candidates, key=lambda item: item.get("score", 0), reverse=True)
+    best = []
+    for candidate in candidates:
+        if all(candidate["end"] <= chosen["start"] or candidate["start"] >= chosen["end"] for chosen in best):
+            best.append(candidate)
+        if len(best) >= count:
+            break
+    candidates = sorted(best, key=lambda item: (item["start"], item["end"]))
     parts = []
     for index, candidate in enumerate(candidates[:count], 1):
         parts.append({
