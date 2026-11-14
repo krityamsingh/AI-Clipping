@@ -128,6 +128,7 @@ render the selected result. **Read [AGENTS.md](AGENTS.md) first.**
 ### Quick start
 
     python -m src.agent_cli analyze --source raw/my_video.mp4 --model small --vocabulary GTA Rockstar NPC --output analysis_report.json
+    python -m src.agent_cli frames --analysis analysis_report.json --output-dir previews/agent_frames
     python -m src.agent_cli plan --analysis analysis_report.json --profile gaming --parts 2 --output edit_plan.json
     python -m src.agent_cli validate --plan edit_plan.json
     python -m src.agent_cli render --plan edit_plan.json --output-dir export/agent_edit
