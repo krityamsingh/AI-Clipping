@@ -381,6 +381,7 @@ async def serve_preview_file(filename: str):
 # ---------------------------------------------------------------------------
 from src.agent_workflow import analyze_source, build_auto_plan, validate_plan
 from src.render_plan import render_plan
+from src.clip_profiles import PROFILES, EDIT_STYLES
 
 
 class AgentAnalyzeRequest(BaseModel):
@@ -388,11 +389,15 @@ class AgentAnalyzeRequest(BaseModel):
     model: str = Field(default="base", pattern=r"^(tiny|base|small|medium)$")
     target_duration: float = Field(default=45.0, gt=5, le=600)
     vocabulary: List[str] = Field(default_factory=list)
+    profile: str = "general"
+    chat_log: Optional[str] = None
+    signals_only: bool = False
 
 
 class AgentPlanRequest(BaseModel):
     analysis: Dict[str, Any]
-    profile: str = Field(default="general", pattern=r"^(general|podcast|gaming|talking_head|tutorial)$")
+    profile: str = "general"
+    edit_style: Optional[str] = None
     target_duration: float = Field(default=45, ge=5, le=600)
     parts: Optional[int] = Field(default=None, ge=1, le=100)
     aspect_ratio: str = Field(default="9:16", pattern=r"^(9:16|16:9|1:1)$")
@@ -409,9 +414,11 @@ async def agent_spec():
     return {
         "api_version": 1,
         "documentation": "AGENTS.md",
-        "profiles": ["general", "podcast", "gaming", "talking_head", "tutorial"],
+        "profiles": list(PROFILES),
+        "editing_styles": list(EDIT_STYLES),
         "operations": {
             "analyze": "POST /api/agent/analyze, then GET /api/status/{job_id}",
+            "livestream": "Use local CLI clip-live with playable HLS/RTMP URL",
             "plan": "POST /api/agent/plan with analysis JSON",
             "render": "POST /api/agent/render with edited plan JSON, then GET /api/status/{job_id}",
             "download": "GET /api/agent/media/{job_id}/{filename}"
@@ -419,6 +426,7 @@ async def agent_spec():
         "edit_plan_fields": {
             "version": 1, "source": "path in raw/",
             "profile": "podcast", "settings": {"aspect_ratio": "9:16", "quality": "final",
+                                               "edit_style": "podcast",
                                                "captions": True, "word_highlight": True},
             "caption_corrections": {"observed incorrect phrase": "verified corrected phrase"},
             "transcript": [{"start": 0, "end": 1, "text": "verified words", "words": []}],
@@ -439,7 +447,9 @@ def _agent_analyze_job(job_id, data):
         report = analyze_source(
             data["source"], model=data.get("model", "base"),
             target_duration=data.get("target_duration", 45),
-            vocabulary=data.get("vocabulary") or [])
+            vocabulary=data.get("vocabulary") or [],
+            profile=data.get("profile", "general"),
+            chat_log=data.get("chat_log"), signals_only=bool(data.get("signals_only", False)))
         job["analysis_report"] = report
         job.update(status="completed", progress=100,
                    current_step="Analysis complete",
@@ -455,6 +465,10 @@ def _agent_analyze_job(job_id, data):
 async def start_agent_analysis(req: AgentAnalyzeRequest, background_tasks: BackgroundTasks):
     try:
         source = allowed_source(req.source)
+        if req.profile not in PROFILES:
+            raise ValueError("Unsupported video profile")
+        if req.chat_log:
+            allowed_source(req.chat_log)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     job_id = uuid.uuid4().hex
@@ -463,6 +477,8 @@ async def start_agent_analysis(req: AgentAnalyzeRequest, background_tasks: Backg
                     "created_at": time.time()}
     payload = req.model_dump()
     payload["source"] = str(source)
+    if payload.get("chat_log"):
+        payload["chat_log"] = str(allowed_source(payload["chat_log"]))
     background_tasks.add_task(_agent_analyze_job, job_id, payload)
     return {"job_id": job_id, "status": "queued"}
 
@@ -471,10 +487,15 @@ async def start_agent_analysis(req: AgentAnalyzeRequest, background_tasks: Backg
 async def make_agent_plan(req: AgentPlanRequest):
     try:
         allowed_source(str(req.analysis.get("source") or ""))
+        if req.profile not in PROFILES:
+            raise ValueError("Unsupported video profile")
+        if req.edit_style is not None and req.edit_style not in EDIT_STYLES:
+            raise ValueError("Unsupported editing style")
         plan = await run_in_threadpool(
             build_auto_plan, req.analysis, profile=req.profile,
             target_duration=req.target_duration, max_parts=req.parts,
-            aspect_ratio=req.aspect_ratio, quality=req.quality)
+            aspect_ratio=req.aspect_ratio, quality=req.quality,
+            edit_style=req.edit_style)
         return {"status": "planned", "plan": plan}
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
