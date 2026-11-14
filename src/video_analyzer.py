@@ -251,7 +251,7 @@ class VideoAnalyzer:
             "peak_threshold": threshold
         }
 
-    def transcribe_audio(self, wav_path: Path) -> List[Dict[str, Any]]:
+    def transcribe_audio(self, wav_path: Path, initial_prompt: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Run Faster-Whisper speech recognition with word-level timestamps.
         """
@@ -259,6 +259,10 @@ class VideoAnalyzer:
         segments_gen, info = model.transcribe(
             str(wav_path),
             word_timestamps=True,
+            beam_size=5,
+            best_of=5,
+            condition_on_previous_text=False,
+            initial_prompt=initial_prompt,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=400)
         )
