@@ -138,7 +138,7 @@ class CaptionGenerator:
                 end = min(end, clip_end - clip_start)
 
             text = seg.get("text", "").strip()
-            if not text:
+            if end <= start or not text:
                 continue
 
             lines.append(f"{index}")
@@ -242,6 +242,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         groups = []
         curr_group = []
         for w in valid_words:
+            if curr_group and w["start"] - curr_group[-1]["end"] > 0.48:
+                groups.append(curr_group)
+                curr_group = []
             curr_group.append(w)
             # Break group if max words reached or there is a natural pause (> 0.4s)
             if len(curr_group) >= self.max_words_per_group or w["word"].endswith((".", "!", "?", ",")):
