@@ -8,6 +8,7 @@ from pathlib import Path
 from src.agent_workflow import build_auto_plan, validate_plan
 from src.transcript_tools import correct_transcript, retime_shots, caption_cues, review_transcript
 from src.render_plan import render_plan
+from src.visual_sampler import sample_frames
 
 
 class AgentPlanTests(unittest.TestCase):
@@ -82,6 +83,10 @@ class FFmpegAgentRenderTests(unittest.TestCase):
                  "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                  "-c:a", "aac", "-shortest", str(source)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            frames = sample_frames({"source": str(source), "metadata": {"duration": 5},
+                                    "scene_cuts": [1.0, 3.0]}, root / "frames", max_frames=3)
+            self.assertEqual(len(frames["frames"]), 2)
+            self.assertTrue(Path(frames["frames"][0]["image"]).is_file())
             transcript = [
                 {"start": .3, "end": 1.2, "text": "hello world.", "words": [
                     {"word": "hello", "start": .3, "end": .6},
