@@ -89,6 +89,28 @@ def make_parser():
     clip_live.add_argument("--clips-per-chunk", type=int, default=1)
     clip_live.add_argument("--quality", default="preview", choices=["preview", "final"])
 
+    watch = cmds.add_parser("watch-live", help="Continuously watch a live link, rank spikes and export clips")
+    watch.add_argument("--url", required=True)
+    watch.add_argument("--twitch-channel", default="", help="Optional Twitch channel supplying chat evidence")
+    watch.add_argument("--chat-offset", type=float, default=0, help="Seconds added to chat arrival times for latency calibration")
+    watch.add_argument("--capture-dir", help="New directory; default raw/watch_<session>")
+    watch.add_argument("--output-dir", help="Empty directory; default export/watch_<session>")
+    watch.add_argument("--chunk-seconds", type=float, default=60)
+    watch.add_argument("--duration", type=float, default=45)
+    watch.add_argument("--min-score", type=float, default=35, help="Minimum measured activity score, not virality probability")
+    watch.add_argument("--clips-per-window", type=int, default=1)
+    watch.add_argument("--model", choices=["tiny", "base", "small", "medium"], default="small")
+    watch.add_argument("--vocabulary", nargs="*", default=[])
+    watch.add_argument("--signals-only", action="store_true", help="Skip Whisper and disable captions")
+    watch.add_argument("--profile", choices=PROFILES, default="livestream")
+    watch.add_argument("--style", choices=tuple(EDIT_STYLES), default="gaming")
+    watch.add_argument("--quality", choices=["preview", "final"], default="preview")
+    watch.add_argument("--aspect", choices=["9:16", "16:9", "1:1"], default="9:16")
+    watch.add_argument("--queue-size", type=int, default=4)
+    watch.add_argument("--max-disk-gb", type=float, default=10)
+    watch.add_argument("--max-runtime", type=float, default=0, help="Seconds; 0 watches until Ctrl+C or disk limit")
+    watch.add_argument("--retry-seconds", type=float, default=10)
+
     verify = cmds.add_parser("validate", help="Validate an agent-created plan without rendering")
     verify.add_argument("--plan", required=True)
     return parser
@@ -134,6 +156,28 @@ def run(argv=None):
         from src.live_capture import capture_live
         result = capture_live(args.url, output_dir=args.output_dir,
                               chunk_seconds=args.chunk_seconds, chunks=args.chunks)
+    elif args.command == "watch-live":
+        import signal
+        import uuid
+        from config.settings import RAW_DIR, EXPORT_DIR
+        from src.live_watcher import LiveWatcher, WatchConfig
+        session = "watch_" + uuid.uuid4().hex[:12]
+        values = vars(args).copy()
+        values.pop("command")
+        values["capture_dir"] = args.capture_dir or str(RAW_DIR / session)
+        values["output_dir"] = args.output_dir or str(EXPORT_DIR / session)
+        watcher = LiveWatcher(WatchConfig(**values))
+        previous = {sig: signal.signal(sig, lambda *_: watcher.stop())
+                    for sig in (signal.SIGINT, signal.SIGTERM)}
+        print("Watching live stream. Ctrl+C stops capture and drains queued clips. "
+              f"Status: {values['output_dir']}/status.json", file=sys.stderr)
+        try:
+            result = watcher.run()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+        if result["status"] == "failed":
+            raise RuntimeError(result.get("error") or "Live watcher failed")
     elif args.command == "clip-live":
         from src.live_capture import capture_live
         capture = capture_live(args.url, output_dir=args.capture_dir,

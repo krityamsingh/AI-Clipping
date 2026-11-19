@@ -222,8 +222,8 @@ function startPolling(jobId) {
 }
 
 // Render generated clips showcase
-function renderClipsShowcase(clips) {
-  const container = document.getElementById('clips-showcase');
+function renderClipsShowcase(clips, targetId = 'clips-showcase') {
+  const container = document.getElementById(targetId);
   if (!clips || clips.length === 0) {
     container.innerHTML = `
       <div class="empty-state">
@@ -248,14 +248,14 @@ function renderClipsShowcase(clips) {
       <div class="clip-details">
         <h3>#${idx + 1}: ${escapeHtml(clip.title)}</h3>
         <div class="clip-meta-row">
-          <span class="clip-score-badge">Virality Score: ${escapeHtml(clip.score ?? 0)}/100</span>
+          <span class="clip-score-badge">Activity Score: ${escapeHtml(clip.score ?? 'N/A')}</span>
           <span>⏱️ ${escapeHtml(clip.duration)}s (${escapeHtml(clip.start)}s - ${escapeHtml(clip.end)}s)</span>
           <span>📐 ${escapeHtml(clip.aspect_ratio || '9:16')}</span>
           <span>💾 ${escapeHtml(clip.size_mb ?? 0)} MB</span>
         </div>
         <div class="clip-desc">
           <strong>Key Hook / Explanation:</strong>
-          <p>${escapeHtml(clip.explanation || clip.text || 'High pacing viral segment with synchronized speech.')}</p>
+          <p>${escapeHtml(clip.explanation || clip.text || 'Saved clip. Review the source context and captions.')}</p>
         </div>
         <div class="clip-actions">
           <a href="${safeDownloadUrl}" download class="btn btn-primary btn-sm">⬇️ Download MP4</a>
@@ -304,4 +304,88 @@ async function runStyleAnalysis() {
 window.addEventListener('DOMContentLoaded', () => {
   refreshRawVideos();
   loadExistingExports();
+});
+
+let liveSessionId = null;
+let livePollTimer = null;
+let liveClipCount = -1;
+
+async function startLiveWatcher() {
+  const start = document.getElementById('live-start');
+  start.disabled = true;
+  try {
+    const response = await fetch('/api/live/start', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        url: document.getElementById('live-url').value.trim(),
+        twitch_channel: document.getElementById('live-chat').value.trim(),
+        min_score: Number(document.getElementById('live-threshold').value),
+        chat_offset: Number(document.getElementById('live-offset').value),
+        signals_only: !document.getElementById('live-whisper').checked
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Check the live stream settings.');
+    liveSessionId = data.session_id;
+    liveClipCount = -1;
+    pollLiveWatcher();
+  } catch (error) {
+    document.getElementById('live-status').textContent = error.message;
+    start.disabled = false;
+  }
+}
+
+async function stopLiveWatcher() {
+  if (!liveSessionId) return;
+  document.getElementById('live-stop').disabled = true;
+  try {
+    const response = await fetch(`/api/live/${liveSessionId}/stop`, {method: 'POST'});
+    if (!response.ok) throw new Error('Could not stop the watcher. Retry.');
+  } catch (error) {
+    document.getElementById('live-status').textContent = error.message;
+    document.getElementById('live-stop').disabled = false;
+  }
+}
+
+async function pollLiveWatcher() {
+  clearTimeout(livePollTimer);
+  if (!liveSessionId) return;
+  try {
+    const response = await fetch(`/api/live/${liveSessionId}`);
+    if (!response.ok) throw new Error('Live session unavailable.');
+    const data = await response.json();
+    const terminal = ['stopped', 'failed'].includes(data.status);
+    document.getElementById('live-start').disabled = !terminal;
+    document.getElementById('live-stop').disabled = terminal || ['stopping', 'draining'].includes(data.status);
+    const error = data.error || data.errors.at(-1);
+    document.getElementById('live-status').textContent = `${data.status}${error ? ' · ' + error : ''}`;
+    const chat = data.chat;
+    document.getElementById('live-counters').textContent =
+      `Spikes: ${data.spike_count} · Clips: ${data.clips_rendered} · Queue: ${data.queue_depth} · ` +
+      `Dropped chunks: ${data.segments_dropped} · Reconnects: ${data.reconnects} · ` +
+      (chat.channel ? `Chat: ${chat.connected ? 'connected' : 'disconnected'} · ${chat.messages_last_5s} messages/5s · ${chat.spike_ratio}× baseline${chat.error ? ' · ' + chat.error : ''}` : 'Chat: disabled');
+    if (liveClipCount !== data.clips_rendered) {
+      liveClipCount = data.clips_rendered;
+      renderClipsShowcase(data.clips, 'live-clips');
+    }
+    if (!terminal) livePollTimer = setTimeout(pollLiveWatcher, 2000);
+  } catch (error) {
+    document.getElementById('live-status').textContent = error.message + ' Retrying…';
+    livePollTimer = setTimeout(pollLiveWatcher, 5000);
+  }
+}
+
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const response = await fetch('/api/live');
+    if (!response.ok) return;
+    const data = await response.json();
+    const session = data.sessions.find(item => !['stopped', 'failed'].includes(item.status)) || data.sessions.at(-1);
+    if (session) {
+      liveSessionId = session.session_id;
+      pollLiveWatcher();
+    }
+  } catch (error) {
+    console.error('Cannot restore live session:', error);
+  }
 });

@@ -28,6 +28,40 @@
       </div>
     </header>
 
+    <section class="card mt-4" aria-labelledby="live-heading">
+      <h2 id="live-heading">Continuous live stream clipper</h2>
+      <p class="subtitle">Watch a YouTube or Twitch live link, combine chat bursts with audio and motion spikes, and export candidates with Whisper captions.</p>
+      <div class="form-row">
+        <div class="form-group col-6">
+          <label for="live-url">Live stream link</label>
+          <input id="live-url" type="url" class="form-control" placeholder="https://www.youtube.com/watch?v=…">
+        </div>
+        <div class="form-group col-6">
+          <label for="live-chat">Twitch chat channel (optional)</label>
+          <input id="live-chat" class="form-control" placeholder="Channel name; automatic for Twitch stream links">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group col-6">
+          <label for="live-threshold">Minimum activity score (0–100)</label>
+          <input id="live-threshold" type="number" min="0" max="100" value="35" class="form-control">
+        </div>
+        <div class="form-group col-6">
+          <label for="live-offset">Chat timing adjustment (seconds)</label>
+          <input id="live-offset" type="number" min="-300" max="300" value="0" class="form-control">
+        </div>
+      </div>
+      <label class="checkbox-label"><input id="live-whisper" type="checkbox" checked> Whisper small captions</label>
+      <p class="hint">60-second capture chunks · 45-second clips · full viewport · 10 GiB session limit. Chat timing depends on playback latency. Activity scores do not predict virality; review clips and captions.</p>
+      <div class="row mt-2">
+        <button id="live-start" class="btn btn-primary" onclick="startLiveWatcher()">Start watching</button>
+        <button id="live-stop" class="btn btn-secondary" onclick="stopLiveWatcher()" disabled>Stop watching</button>
+      </div>
+      <p id="live-status" role="status" aria-live="polite">No watcher running.</p>
+      <p id="live-counters" class="hint"></p>
+      <div id="live-clips" class="clips-container"></div>
+    </section>
+
     <!-- Main Grid -->
     <main class="main-grid">
       <!-- Left Column: Settings & Configuration -->

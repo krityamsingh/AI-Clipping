@@ -39,5 +39,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_agent_pipeline.py' -v
       - name: Stream highlight, chat and render-style tests
         run: python -m unittest discover -s tests -p 'test_live_highlights.py' -v
+      - name: Continuous watcher lifecycle, chat and local capture tests
+        run: python -m unittest discover -s tests -p 'test_live_watcher.py' -v
       - name: Web route tests
         run: python tests/test_web.py

@@ -12,6 +12,7 @@ import shutil
 import time
 import uuid
 import threading
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -42,7 +43,22 @@ from src.downloader import VideoDownloader
 logger = logging.getLogger("AI-Clipping.Web")
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="AI Video Clipping Engine", version="1.0.0")
+live_sessions = {}
+live_sessions_lock = threading.Lock()
+
+
+@asynccontextmanager
+async def lifespan(application):
+    yield
+    with live_sessions_lock:
+        sessions = list(live_sessions.values())
+    for session in sessions:
+        session["watcher"].stop()
+    for session in sessions:
+        await run_in_threadpool(session["thread"].join)
+
+
+app = FastAPI(title="AI Video Clipping Engine", version="1.0.0", lifespan=lifespan)
 
 # Mount static and templates
 static_dir = BASE_DIR / "web" / "static"
@@ -418,7 +434,7 @@ async def agent_spec():
         "editing_styles": list(EDIT_STYLES),
         "operations": {
             "analyze": "POST /api/agent/analyze, then GET /api/status/{job_id}",
-            "livestream": "Use local CLI clip-live with playable HLS/RTMP URL",
+            "livestream": "POST /api/live/start; GET /api/live/{session_id}; POST /api/live/{session_id}/stop",
             "plan": "POST /api/agent/plan with analysis JSON",
             "render": "POST /api/agent/render with edited plan JSON, then GET /api/status/{job_id}",
             "download": "GET /api/agent/media/{job_id}/{filename}"
@@ -557,3 +573,103 @@ async def agent_download(job_id: str, filename: str):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(path, media_type=media_type)
+
+
+# Continuous capture runs independently from the serialized ASR/render job slot.
+from src.live_watcher import LiveWatcher, WatchConfig
+
+
+class LiveStartRequest(BaseModel):
+    url: str
+    twitch_channel: str = ""
+    chat_offset: float = Field(default=0, ge=-300, le=300)
+    chunk_seconds: float = Field(default=60, ge=10, le=300)
+    duration: float = Field(default=45, ge=5, le=120)
+    min_score: float = Field(default=35, ge=0, le=100)
+    clips_per_window: int = Field(default=1, ge=1, le=5)
+    model: str = Field(default="small", pattern=r"^(tiny|base|small|medium)$")
+    vocabulary: List[str] = Field(default_factory=list)
+    signals_only: bool = False
+    profile: str = "livestream"
+    style: str = "gaming"
+    quality: str = Field(default="preview", pattern=r"^(preview|final)$")
+    aspect: str = Field(default="9:16", pattern=r"^(9:16|16:9|1:1)$")
+    max_disk_gb: float = Field(default=10, ge=.1, le=1000)
+    max_runtime: float = Field(default=0, ge=0, le=604800)
+
+
+def _run_live_session(watcher):
+    try:
+        watcher.run()
+    except Exception as exc:
+        logger.exception("Live watcher failed")
+        watcher.error(exc)
+        watcher.update(status="failed", error=str(exc))
+        watcher.stop_event.set()
+
+
+def _live_status(session_id):
+    with live_sessions_lock:
+        session = live_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Live session not found")
+    snapshot = session["watcher"].snapshot()
+    for clip in snapshot["clips"]:
+        relative = Path(clip["output"]).relative_to(EXPORT_DIR / session_id)
+        clip["url"] = f"/api/live/{session_id}/media/{relative.as_posix()}"
+        clip["download_url"] = clip["url"]
+        clip["size_mb"] = round(Path(clip["output"]).stat().st_size / 1048576, 2)
+    return {"session_id": session_id, **snapshot}
+
+
+@app.post("/api/live/start")
+async def start_live(req: LiveStartRequest):
+    session_id = uuid.uuid4().hex
+    try:
+        config = WatchConfig(**req.model_dump(), capture_dir=str(RAW_DIR / session_id),
+                             output_dir=str(EXPORT_DIR / session_id)).validate()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with live_sessions_lock:
+        if any(session["thread"].is_alive() for session in live_sessions.values()):
+            raise HTTPException(status_code=409, detail="Stop the active live watcher before starting another")
+        watcher = LiveWatcher(config, processing_lock=job_slots)
+        thread = threading.Thread(target=_run_live_session, args=(watcher,),
+                                  name=f"watch-{session_id[:8]}", daemon=True)
+        live_sessions[session_id] = {"watcher": watcher, "thread": thread}
+        thread.start()
+    return {"session_id": session_id, "status": "starting"}
+
+
+@app.get("/api/live")
+async def list_live_sessions():
+    with live_sessions_lock:
+        ids = list(live_sessions)
+    return {"sessions": [_live_status(key) for key in ids]}
+
+
+@app.get("/api/live/{session_id}")
+async def live_status(session_id: str):
+    return _live_status(session_id)
+
+
+@app.post("/api/live/{session_id}/stop")
+async def stop_live(session_id: str):
+    with live_sessions_lock:
+        session = live_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Live session not found")
+    if session["thread"].is_alive():
+        session["watcher"].stop()
+    return _live_status(session_id)
+
+
+@app.get("/api/live/{session_id}/media/{filename:path}")
+async def live_media(session_id: str, filename: str):
+    if not re.fullmatch(r"[a-f0-9]{32}", session_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    root = (EXPORT_DIR / session_id).resolve()
+    path = (root / filename).resolve()
+    if not path.is_relative_to(root) or not path.is_file() or path.suffix not in {".mp4", ".srt", ".ass", ".json"}:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path, media_type="video/mp4" if path.suffix == ".mp4" else "text/plain")

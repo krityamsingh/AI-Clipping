@@ -39,6 +39,41 @@ tests/*.mp4
 tests/*.wav
 tests/*.ass
 
+# Source and generated media, including files outside the working directories
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+*.[mM]4[vV]
+*.[aA][vV][iI]
+segment_*.[tT][sS]
+fixture.[tT][sS]
+*.[mM]2[tT][sS]
+*.[mM][pP][eE][gG]
+*.[mM][pP][gG]
+*.[fF][lL][vV]
+*.[wW][aA][vV]
+*.[mM][pP]3
+*.[mM]4[aA]
+*.[fF][lL][aA][cC]
+*.[aA][aA][cC]
+*.[mM]3[uU]8
+
+# Per-video reports, EDLs and subtitle output (keep source and docs in Git)
+/analysis/
+/analysis*.json
+/*edit_plan*.json
+/corrections.json
+*_quality_report.json
+*.srt
+*.ass
+*.vtt
+
+# Local credentials
+.env
+.env.*
+!.env.example
+
 # Logs & Cache
 logs/*.log
 *.log

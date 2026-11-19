@@ -6,6 +6,7 @@ the assembled audio, Part 1/Part 2 exports, and decode validation.
 import json
 import logging
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -162,7 +163,7 @@ def _render_part(part, plan, source, out_dir, transcript, source_has_audio):
             issues.append("Assembled duration differs from source shot sum")
         if issues:
             raise RuntimeError("; ".join(issues))
-        partial.replace(output)
+        shutil.move(str(partial), str(output))
 
     review = review_transcript(actual_segments)
     from src.transcript_tools import review_cut_boundaries

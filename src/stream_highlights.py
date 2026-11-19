@@ -32,7 +32,11 @@ def _robust_spikes(values):
     baseline = float(np.median(arr))
     spread = float(np.percentile(arr, 90) - baseline)
     if spread <= 1e-7:
-        return [0.0] * len(arr)
+        # Sparse chat/audio bursts may occupy fewer than 10% of bins. The
+        # percentile then equals the baseline even though a real burst exists.
+        spread = float(np.max(arr) - baseline)
+        if spread <= 1e-7:
+            return [0.0] * len(arr)
     return [round(float(min(1, max(0, (x - baseline) / spread))), 4) for x in arr]
 
 
@@ -84,6 +88,8 @@ def sample_motion(video_path, fps=FRAME_FPS, width=FRAME_WIDTH, height=FRAME_HEI
         proc.kill()
         proc.wait()
         raise
+    finally:
+        proc.stdout.close()
     spike_values = _robust_spikes(
         [r["motion"] * (0.25 if r["scene_jump"] else 1.0) * (0.55 + 0.45 * r["sustained"])
          for r in results])
@@ -196,7 +202,7 @@ def _window_strength(events, start, end, key):
 
 def rank_stream_highlights(duration, motion, audio, chat=None, scene_cuts=None,
                            *, profile="livestream", target_duration=40,
-                           num_clips=8, context_before=12):
+                           num_clips=8, context_before=12, peak_bounds=None):
     """Rank non-overlapping highlight windows from observed, timestamped signals."""
     if profile not in PROFILES:
         raise ValueError("Unknown content profile")
@@ -218,6 +224,13 @@ def rank_stream_highlights(duration, motion, audio, chat=None, scene_cuts=None,
                    if v.get("energy", 0) >= .48] +
                   [(v["spike"], v["timestamp"], "chat") for v in chat
                    if v.get("spike", 0) >= .40], reverse=True)
+    if peak_bounds is not None:
+        # Rolling windows own only their middle segment. Neighboring evidence
+        # still contributes to scoring and context, but cannot steal its peaks.
+        lower, upper = peak_bounds
+        if not 0 <= lower < upper <= duration + .1:
+            raise ValueError("Invalid peak ownership bounds")
+        seed = [item for item in seed if lower <= item[1] < upper]
     if not seed:
         return []
     windows = []
